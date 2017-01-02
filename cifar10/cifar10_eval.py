@@ -41,7 +41,9 @@ import time
 import numpy as np
 import tensorflow as tf
 
-from tensorflow.models.image.cifar10 import cifar10
+#from tensorflow.models.image.cifar10 import cifar10
+import cifar10
+from common_flags import *
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -122,16 +124,28 @@ def evaluate():
 
     # Build a Graph that computes the logits predictions from the
     # inference model.
-    logits = cifar10.inference(images)
+    if FLAGS.model == 'small_cnn':
+      logits = cifar10.inference_small(images)
+    elif FLAGS.model == 'resnet_18':
+      #logits = cifar10.inference_resnet(images, is_train=True)
+      logits = cifar10.inference_resnet(images, is_train=False)
+    elif FLAGS.model == 'lcnn_resnet_18':
+      logits = cifar10.inference_lcnn_resnet(images, is_train=True)
+    elif FLAGS.model == 'resnet_lcnn_hybrid':
+      logits = cifar10.inference_resnet_lcnn_hybrid(images, is_train=True)
+    else:
+      raise Exception('Unknown model type: {}'.format(FLAGS.model))
 
     # Calculate predictions.
     top_k_op = tf.nn.in_top_k(logits, labels, 1)
 
     # Restore the moving average version of the learned variables for eval.
-    variable_averages = tf.train.ExponentialMovingAverage(
-        cifar10.MOVING_AVERAGE_DECAY)
-    variables_to_restore = variable_averages.variables_to_restore()
-    saver = tf.train.Saver(variables_to_restore)
+    #variable_averages = tf.train.ExponentialMovingAverage(
+    #    cifar10.MOVING_AVERAGE_DECAY)
+    #variables_to_restore = variable_averages.variables_to_restore()
+    #saver = tf.train.Saver(variables_to_restore)
+
+    saver = tf.train.Saver()
 
     # Build the summary operation based on the TF collection of Summaries.
     summary_op = tf.merge_all_summaries()
@@ -150,6 +164,7 @@ def main(argv=None):  # pylint: disable=unused-argument
   if tf.gfile.Exists(FLAGS.eval_dir):
     tf.gfile.DeleteRecursively(FLAGS.eval_dir)
   tf.gfile.MakeDirs(FLAGS.eval_dir)
+  FLAGS.mode = 'eval'
   evaluate()
 
 

@@ -47,20 +47,32 @@ import time
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
-from tensorflow.models.image.cifar10 import cifar10
+#from tensorflow.models.image.cifar10 import cifar10
+import cifar10
+from common_flags import *
 
 FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_string('train_dir', '/tmp/cifar10_train',
                            """Directory where to write event logs """
                            """and checkpoint.""")
-tf.app.flags.DEFINE_integer('max_steps', 1000000,
+tf.app.flags.DEFINE_integer('max_steps', 200000,
                             """Number of batches to run.""")
 tf.app.flags.DEFINE_integer('num_gpus', 1,
                             """How many GPUs to use.""")
 tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
+tf.app.flags.DEFINE_string('gpus', '0',
+                           'Available gpus')
+tf.app.flags.DEFINE_float('gpu_memory_ratio', 0.4,
+                           'Ration of gpu memory to lock')
 
+tf.app.flags.DEFINE_string('optimizer', 'sgd_momentum',
+                           'Optimizer of choice')
+tf.app.flags.DEFINE_float('initial_lr', 0.1,
+                           'Learning rate to start with')
+tf.app.flags.DEFINE_integer('num_updates_per_decay', 60000,
+                           'Number of updates after which we drop learning rate')
 
 def tower_loss(scope):
   """Calculate the total loss on a single tower running the CIFAR model.
@@ -75,7 +87,16 @@ def tower_loss(scope):
   images, labels = cifar10.distorted_inputs()
 
   # Build inference Graph.
-  logits = cifar10.inference(images)
+  if FLAGS.model == 'small_cnn':
+    logits = cifar10.inference_small(images)
+  elif FLAGS.model == 'resnet_18':
+    logits = cifar10.inference_resnet(images, is_train=True)
+  elif FLAGS.model == 'lcnn_resnet_18':
+    logits = cifar10.inference_lcnn_resnet(images, is_train=True)
+  elif FLAGS.model == 'resnet_lcnn_hybrid':
+    logits = cifar10.inference_resnet_lcnn_hybrid(images, is_train=True)
+  else:
+    raise Exception('Unknown model type: {}'.format(FLAGS.model))
 
   # Build the portion of the Graph calculating the losses. Note that we will
   # assemble the total_loss using a custom function below.
@@ -86,14 +107,19 @@ def tower_loss(scope):
 
   # Calculate the total loss for the current tower.
   total_loss = tf.add_n(losses, name='total_loss')
+  l1_loss = tf.add_n([0.] + [l for l in losses if l.op.name.find('l1_loss') != -1],
+                     name='l1_sum_loss')
+  l2_loss = tf.add_n([0.] + [l for l in losses if l.op.name.find('weight_loss') != -1],
+                     name='l2_sum_loss')
+  all_losses = losses + [total_loss, l1_loss, l2_loss]
 
   # Compute the moving average of all individual losses and the total loss.
   loss_averages = tf.train.ExponentialMovingAverage(0.9, name='avg')
-  loss_averages_op = loss_averages.apply(losses + [total_loss])
+  loss_averages_op = loss_averages.apply(all_losses)
 
   # Attach a scalar summary to all individual losses and the total loss; do the
   # same for the averaged version of the losses.
-  for l in losses + [total_loss]:
+  for l in all_losses:
     # Remove 'tower_[0-9]/' from the name in case this is a multi-GPU training
     # session. This helps the clarity of presentation on tensorboard.
     loss_name = re.sub('%s_[0-9]*/' % cifar10.TOWER_NAME, '', l.op.name)
@@ -102,7 +128,9 @@ def tower_loss(scope):
     tf.scalar_summary(loss_name +' (raw)', l)
     tf.scalar_summary(loss_name, loss_averages.average(l))
 
-  with tf.control_dependencies([loss_averages_op]):
+  update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS) 
+  updates = tf.group(*update_ops) # For correct batch norm execution
+  with tf.control_dependencies([updates, loss_averages_op]):
     total_loss = tf.identity(total_loss)
   return total_loss
 
@@ -150,24 +178,22 @@ def train():
   with tf.Graph().as_default(), tf.device('/cpu:0'):
     # Create a variable to count the number of train() calls. This equals the
     # number of batches processed * FLAGS.num_gpus.
-    global_step = tf.get_variable(
-        'global_step', [],
-        initializer=tf.constant_initializer(0), trainable=False)
-
-    # Calculate the learning rate schedule.
-    num_batches_per_epoch = (cifar10.NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN /
-                             FLAGS.batch_size)
-    decay_steps = int(num_batches_per_epoch * cifar10.NUM_EPOCHS_PER_DECAY)
+    global_step = tf.contrib.framework.get_or_create_global_step()
 
     # Decay the learning rate exponentially based on the number of steps.
-    lr = tf.train.exponential_decay(cifar10.INITIAL_LEARNING_RATE,
+    lr = tf.train.exponential_decay(FLAGS.initial_lr,
                                     global_step,
-                                    decay_steps,
+                                    FLAGS.num_updates_per_decay,
                                     cifar10.LEARNING_RATE_DECAY_FACTOR,
                                     staircase=True)
 
     # Create an optimizer that performs gradient descent.
-    opt = tf.train.GradientDescentOptimizer(lr)
+    if FLAGS.optimizer == 'sgd_momentum':
+        opt = tf.train.MomentumOptimizer(lr, momentum=0.9)
+    elif FLAGS.optimizer == 'adam':
+        opt = tf.train.AdamOptimizer(learning_rate=lr)
+    else:
+        raise Exception('Unknown optimizer type {}'.format(FLAGS.optimizer))
 
     # Calculate the gradients for each model tower.
     tower_grads = []
@@ -232,8 +258,8 @@ def train():
     # True to build towers on GPU, as some of the ops do not have GPU
     # implementations.
     config = tf.ConfigProto()
-    config.gpu_options.per_process_gpu_memory_fraction=0.9
-    config.gpu_options.visible_device_list='1,2,3'
+    config.gpu_options.per_process_gpu_memory_fraction=FLAGS.gpu_memory_ratio
+    config.gpu_options.visible_device_list=FLAGS.gpus
     config.allow_soft_placement=True
     config.log_device_placement=FLAGS.log_device_placement
     sess = tf.Session(config=config)
@@ -276,6 +302,7 @@ def main(argv=None):  # pylint: disable=unused-argument
   if tf.gfile.Exists(FLAGS.train_dir):
     tf.gfile.DeleteRecursively(FLAGS.train_dir)
   tf.gfile.MakeDirs(FLAGS.train_dir)
+  FLAGS.mode = 'train'
   train()
 
 

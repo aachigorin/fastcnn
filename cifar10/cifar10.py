@@ -40,11 +40,13 @@ import os
 import re
 import sys
 import tarfile
+import math
 
 from six.moves import urllib
 import tensorflow as tf
 
-from tensorflow.models.image.cifar10 import cifar10_input
+#from tensorflow.models.image.cifar10 import cifar10_input
+import cifar10_input
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -65,9 +67,7 @@ NUM_EXAMPLES_PER_EPOCH_FOR_EVAL = cifar10_input.NUM_EXAMPLES_PER_EPOCH_FOR_EVAL
 
 # Constants describing the training process.
 MOVING_AVERAGE_DECAY = 0.9999     # The decay to use for the moving average.
-NUM_EPOCHS_PER_DECAY = 350.0      # Epochs after which learning rate decays.
 LEARNING_RATE_DECAY_FACTOR = 0.1  # Learning rate decay factor.
-INITIAL_LEARNING_RATE = 0.1       # Initial learning rate.
 
 # If a model is trained with multiple GPUs, prefix all Op names with tower_name
 # to differentiate the operations. Note that this prefix is removed from the
@@ -75,6 +75,19 @@ INITIAL_LEARNING_RATE = 0.1       # Initial learning rate.
 TOWER_NAME = 'tower'
 
 DATA_URL = 'http://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz'
+
+def _scalar_summary(x, name=''):
+  if name != '':
+      name = '/' + name
+  tensor_name = re.sub('%s_[0-9]*/' % TOWER_NAME, '', x.op.name) + name
+  tf.scalar_summary(tensor_name, x)
+
+
+def _histogram_summary(x, name=''):
+  if name != '':
+      name = '/' + name
+  tensor_name = re.sub('%s_[0-9]*/' % TOWER_NAME, '', x.op.name) + name
+  tf.histogram_summary(tensor_name, x)
 
 
 def _activation_summary(x):
@@ -112,7 +125,7 @@ def _variable_on_cpu(name, shape, initializer):
   return var
 
 
-def _variable_with_weight_decay(name, shape, stddev, wd):
+def _variable_with_weight_decay(name, shape, wd, stddev=0.05):
   """Helper to create an initialized Variable with weight decay.
 
   Note that the Variable is initialized with a truncated normal distribution.
@@ -128,6 +141,10 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
   Returns:
     Variable Tensor
   """
+  if FLAGS.glorot_init:
+      k_h, k_w, in_ch, out_ch = shape
+      stddev = math.sqrt(2) * tf.sqrt(2. / ((out_ch + in_ch) * k_h * k_w))
+
   dtype = tf.float16 if FLAGS.use_fp16 else tf.float32
   var = _variable_on_cpu(
       name,
@@ -136,6 +153,48 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
   if wd is not None:
     weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name='weight_loss')
     tf.add_to_collection('losses', weight_decay)
+  return var
+
+
+def _sparse_variable_with_l1_loss(name, shape):
+  dtype = tf.float16 if FLAGS.use_fp16 else tf.float32
+  k_h, k_w, in_ch, out_ch = shape
+
+  # glorot initialization http://jmlr.org/proceedings/papers/v9/glorot10a/glorot10a.pdf
+  # principle is taken from here https://github.com/Lasagne/Lasagne/blob/master/lasagne/init.py#L160 (relu case)
+  stddev = math.sqrt(2) * tf.sqrt(2. / ((out_ch + in_ch) * k_h * k_w))
+  var = _variable_on_cpu(
+      name,
+      shape,
+      tf.truncated_normal_initializer(stddev=stddev, dtype=dtype))
+
+  # from the paper https://arxiv.org/pdf/1611.06473v1.pdf (4.1)
+  eps = FLAGS.c / stddev
+  if FLAGS.mode == 'train':
+      global_step = tf.contrib.framework.get_or_create_global_step()
+      #if global_step >= FLAGS.lcnn_alpha_start_iter:
+      alpha = tf.train.exponential_decay(FLAGS.alpha * eps, global_step,
+                    decay_steps=FLAGS.lcnn_alpha_decay_step,
+                    decay_rate=FLAGS.lcnn_alpha_decay, staircase=True)
+      #else:
+      #    alpha = FLAGS.alpha * eps
+  elif FLAGS.mode == 'eval':
+      alpha = 0
+  else:
+      raise Exception('Unknown mode {}'.format(FLAGS.mode))
+
+  _scalar_summary(tf.identity(stddev, name='stddev'))
+  _scalar_summary(tf.identity(eps, name='eps'))
+  _scalar_summary(tf.identity(alpha, name='alpha'))
+
+  var = var * tf.cast(tf.abs(var) > eps, tf.float32)
+  sparsity = tf.nn.zero_fraction(var, name='weights_sparsity')
+  _scalar_summary(sparsity)
+  tf.add_to_collection('sparsities', sparsity)
+
+  l1_loss = tf.mul(tf.reduce_sum(tf.abs(var)), alpha, name='l1_loss')
+  tf.add_to_collection('losses', l1_loss)
+
   return var
 
 
@@ -185,7 +244,7 @@ def inputs(eval_data):
   return images, labels
 
 
-def inference(images):
+def inference_small(images):
   """Build the CIFAR-10 model.
 
   Args:
@@ -203,7 +262,6 @@ def inference(images):
   with tf.variable_scope('conv1') as scope:
     kernel = _variable_with_weight_decay('weights',
                                          shape=[5, 5, 3, 64],
-                                         stddev=5e-2,
                                          wd=0.0)
     conv = tf.nn.conv2d(images, kernel, [1, 1, 1, 1], padding='SAME')
     biases = _variable_on_cpu('biases', [64], tf.constant_initializer(0.0))
@@ -266,6 +324,371 @@ def inference(images):
     _activation_summary(softmax_linear)
 
   return softmax_linear
+
+
+def inference_resnet(images, is_train):
+    def conv2d(x, k_h, k_w, n_ch, s_h, s_w, is_train, scope_name):
+        with tf.variable_scope(scope_name):
+            in_ch = x.get_shape().as_list()[3]
+            kernel = _variable_with_weight_decay('weights',
+                        shape=[k_h, k_w, in_ch, n_ch],
+                        stddev=5e-2,
+                        wd=FLAGS.weight_decay)
+            conv = tf.nn.conv2d(x, kernel, [1, s_h, s_w, 1], padding='SAME')
+            biases = _variable_on_cpu('biases', [n_ch], tf.constant_initializer(0.0))
+            h = tf.nn.bias_add(conv, biases, name=scope_name+'_res')
+            _activation_summary(h)
+            return h
+
+    def resnet_block(x, k_h, k_w, n_ch, downsample, is_train, scope_name):
+        with tf.variable_scope(scope_name):
+            in_depth = x.get_shape().as_list()[3]
+            if downsample:
+                s_h, s_w = 2, 2
+                filter_ = [1,2,2,1]
+                inpt = tf.nn.max_pool(x, ksize=filter_, strides=filter_, padding='SAME')
+            else:
+                s_h, s_w = 1, 1
+                inpt = x
+
+            if in_depth != n_ch: # different number of channels
+                inpt = tf.pad(inpt, [[0,0], [0,0], [0,0], [0, n_ch - in_depth]])
+
+            h = conv2d(x, k_h, k_w, n_ch, 1, 1,
+                is_train=is_train, scope_name='conv1')
+            h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                trainable=True, is_training=is_train, reuse=False, scope='bn_1')
+            h = tf.nn.relu(h)
+
+            h = conv2d(h, k_h, k_w, n_ch, s_h, s_w,
+                is_train=is_train, scope_name='conv2')
+            h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                trainable=True, is_training=is_train, reuse=False, scope='bn_2')
+            h = tf.nn.relu(h + inpt)
+            return h
+
+    # taken from: https://github.com/gcr/torch-residual-networks/blob/master/residual-layers.lua
+    def resnet_block2(x, k_h, k_w, n_ch, downsample, is_train, scope_name):
+        with tf.variable_scope(scope_name):
+            in_depth = x.get_shape().as_list()[3]
+            if downsample:
+                s_h, s_w = 2, 2
+                filter_ = [1,2,2,1]
+                inpt = tf.nn.avg_pool(x, ksize=filter_, strides=filter_, padding='SAME')
+            else:
+                s_h, s_w = 1, 1
+                inpt = x
+
+            if in_depth != n_ch: # different number of channels
+                inpt = tf.pad(inpt, [[0,0], [0,0], [0,0], [0, n_ch - in_depth]])
+
+            h = conv2d(x, k_h, k_w, n_ch, s_h, s_w,
+                is_train=is_train, scope_name='conv1')
+            h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                trainable=True, is_training=is_train, reuse=False, scope='bn_1')
+            h = tf.nn.relu(h)
+
+            h = conv2d(h, k_h, k_w, n_ch, 1, 1,
+                is_train=is_train, scope_name='conv2')
+            h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                trainable=True, is_training=is_train, reuse=False, scope='bn_2')
+            h = tf.nn.relu(h + inpt)
+            return h
+
+    n_blocks = 3
+    n_f = 16
+    in_shape = images.get_shape().as_list()
+
+    if FLAGS.first_conv_3x3:
+        h = conv2d(images, k_h=3, k_w=3, n_ch=n_f, s_h=1, s_w=1,
+            is_train=is_train, scope_name='conv_init')
+    else:
+        h = conv2d(images, k_h=3, k_w=1, n_ch=n_f, s_h=1, s_w=1,
+            is_train=is_train, scope_name='conv_init')
+
+    h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+       trainable=True, is_training=is_train, reuse=False, scope='bn')
+    h = tf.nn.relu(h)
+
+    if FLAGS.resnet_block_type == 0:
+      resnet_block = resnet_block
+    elif FLAGS.resnet_block_type == 1:
+      resnet_block = resnet_block2
+    else:
+      raise Exception('Unknown exception type {}'.format(FLAGS.resnet_block_type))
+
+    for i in xrange(0, n_blocks):
+        downsample = (i == n_blocks - 1)
+        h = resnet_block(h, k_h=3, k_w=3, n_ch=n_f, is_train=is_train,
+            downsample=downsample, scope_name='resnet_1_{}'.format(i))
+
+    for i in xrange(0, n_blocks):
+        downsample = (i == n_blocks - 1)
+        h = resnet_block(h, k_h=3, k_w=3, n_ch=n_f*2, is_train=is_train,
+            downsample=downsample, scope_name='resnet_2_{}'.format(i))
+
+    for i in xrange(0, n_blocks):
+        downsample = (i == n_blocks - 1)
+        h = resnet_block(h, k_h=3, k_w=3, n_ch=n_f*4, is_train=is_train,
+            downsample=downsample, scope_name='resnet_3_{}'.format(i))
+
+    h = tf.nn.avg_pool(h, ksize=[1,in_shape[1]/8,in_shape[2]/8,1],
+                       strides=[1,1,1,1], padding='VALID')
+    h = conv2d(h, k_h=1, k_w=1, n_ch=NUM_CLASSES, s_h=1, s_w=1,
+               is_train=is_train, scope_name='fc')
+    h = tf.squeeze(h)
+    _activation_summary(h)
+    return h
+
+
+def inference_resnet_lcnn_hybrid(images, is_train):
+    def conv2d(x, k_h, k_w, n_ch, s_h, s_w, is_train, scope_name):
+        with tf.variable_scope(scope_name):
+            #in_ch = x.get_shape().as_list()[3]
+            #kernel = _variable_with_weight_decay('weights',
+            #            shape=[k_h, k_w, in_ch, n_ch],
+            #            stddev=5e-2,
+            #            wd=FLAGS.weight_decay)
+            #conv = tf.nn.conv2d(x, kernel, [1, s_h, s_w, 1], padding='SAME')
+            #biases = _variable_on_cpu('biases', [n_ch], tf.constant_initializer(0.0))
+            #h = tf.nn.bias_add(conv, biases, name=scope_name+'_res')
+            #_activation_summary(h)
+            out_ch_1 = n_ch
+            in_ch1 = x.get_shape().as_list()[3]
+
+            kernel1 = _variable_with_weight_decay('weights1',
+                        shape=[1, 1, in_ch1, out_ch_1],
+                        stddev=5e-2,
+                        wd=FLAGS.weight_decay)
+            conv1 = tf.nn.conv2d(x, kernel1, [1, 1, 1, 1], padding='SAME', name='conv1x1')
+            biases1 = _variable_on_cpu('biases1', [out_ch_1], tf.constant_initializer(0.0))
+            h = tf.nn.bias_add(conv1, biases1, name=scope_name+'_res_0')
+
+            if FLAGS.batch_norm_after_conv_1x1:
+                h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                    trainable=True, is_training=is_train, reuse=False, scope='bn_0')
+
+            in_ch2 = h.get_shape().as_list()[3]
+            kernel2 = _variable_with_weight_decay('weights2',
+                        shape=[k_h, k_w, in_ch2, n_ch],
+                        stddev=5e-2,
+                        wd=FLAGS.weight_decay)
+            conv2 = tf.nn.conv2d(h, kernel2, [1, s_h, s_w, 1],
+                                 padding='SAME', name='conv2')
+            biases2 = _variable_on_cpu('biases2', [n_ch], tf.constant_initializer(0.0))
+            h = tf.nn.bias_add(conv2, biases2, name=scope_name+'_res_1')
+            return h
+
+    def resnet_block(x, k_h, k_w, n_ch, downsample, is_train, scope_name):
+        with tf.variable_scope(scope_name):
+            in_depth = x.get_shape().as_list()[3]
+            if downsample:
+                s_h, s_w = 2, 2
+                filter_ = [1,2,2,1]
+                inpt = tf.nn.max_pool(x, ksize=filter_, strides=filter_, padding='SAME')
+            else:
+                s_h, s_w = 1, 1
+                inpt = x
+
+            if in_depth != n_ch: # different number of channels
+                inpt = tf.pad(inpt, [[0,0], [0,0], [0,0], [0, n_ch - in_depth]])
+
+            h = conv2d(x, k_h, k_w, n_ch, 1, 1,
+                is_train=is_train, scope_name='conv1')
+            h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                trainable=True, is_training=is_train, reuse=False, scope='bn_1')
+            h = tf.nn.relu(h)
+
+            h = conv2d(h, k_h, k_w, n_ch, s_h, s_w,
+                is_train=is_train, scope_name='conv2')
+            h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                trainable=True, is_training=is_train, reuse=False, scope='bn_2')
+            h = tf.nn.relu(h + inpt)
+            return h
+
+    n_blocks = 3
+    n_f = 16
+    in_shape = images.get_shape().as_list()
+
+    h = conv2d(images, k_h=3, k_w=3, n_ch=n_f, s_h=1, s_w=1,
+        is_train=is_train, scope_name='conv_init')
+    h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+        trainable=True, is_training=is_train, reuse=False, scope='bn')
+    h = tf.nn.relu(h)
+
+    for i in xrange(0, n_blocks):
+        downsample = (i == n_blocks - 1)
+        h = resnet_block(h, k_h=3, k_w=3, n_ch=n_f, is_train=is_train,
+            downsample=downsample, scope_name='resnet_1_{}'.format(i))
+
+    for i in xrange(0, n_blocks):
+        downsample = (i == n_blocks - 1)
+        h = resnet_block(h, k_h=3, k_w=3, n_ch=n_f*2, is_train=is_train,
+            downsample=downsample, scope_name='resnet_2_{}'.format(i))
+
+    for i in xrange(0, n_blocks):
+        downsample = (i == n_blocks - 1)
+        h = resnet_block(h, k_h=3, k_w=3, n_ch=n_f*4, is_train=is_train,
+            downsample=downsample, scope_name='resnet_3_{}'.format(i))
+
+    h = tf.nn.avg_pool(h, ksize=[1,in_shape[1]/8,in_shape[1]/8,1],
+                       strides=[1,1,1,1], padding='VALID')
+    h = conv2d(h, k_h=1, k_w=1, n_ch=NUM_CLASSES, s_h=1, s_w=1,
+               is_train=is_train, scope_name='fc')
+    h = tf.squeeze(h)
+    _activation_summary(h)
+    return h
+
+
+def inference_lcnn_resnet(images, is_train):
+    def sparse_lcnn_conv2d(x, k_h, k_w, n_ch, s_h, s_w, is_train, scope_name):
+        with tf.variable_scope(scope_name):
+            out_ch_1 = n_ch / FLAGS.channels_reduction_ratio
+            in_ch1 = x.get_shape().as_list()[3]
+
+            kernel1 = _variable_with_weight_decay('weights1',
+                        shape=[1, 1, in_ch1, out_ch_1],
+                        stddev=5e-2,
+                        wd=0)
+            conv1 = tf.nn.conv2d(x, kernel1, [1, 1, 1, 1], padding='SAME', name='conv1x1')
+            biases1 = _variable_on_cpu('biases1', [out_ch_1], tf.constant_initializer(0.0))
+            h = tf.nn.bias_add(conv1, biases1, name=scope_name+'_res_0')
+
+            if FLAGS.batch_norm_after_conv_1x1:
+                h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                    trainable=True, is_training=is_train, reuse=False, scope='bn_0')
+
+            in_ch2 = h.get_shape().as_list()[3]
+            kernel2 = _sparse_variable_with_l1_loss('weights2',
+                        shape=[k_h, k_w, in_ch2, n_ch])
+            conv2 = tf.nn.conv2d(h, kernel2, [1, s_h, s_w, 1], padding='SAME', name='conv_sparse')
+            biases2 = _variable_on_cpu('biases2', [n_ch], tf.constant_initializer(0.0))
+            h = tf.nn.bias_add(conv2, biases2, name=scope_name+'_res_1')
+            return h
+
+    #def lcnn_conv2d(x, k_h, k_w, n_ch, s_h, s_w, is_train, scope_name):
+    #    with tf.variable_scope(scope_name):
+    #        ch_scale = 4
+    #        n_ch_1 = n_ch / ch_scale
+    #        kernel1 = _variable_with_weight_decay('weights1',
+    #                    shape=[1, 1, x.get_shape().as_list()[3], n_ch_1],
+    #                    stddev=5e-2,
+    #                    wd=0.0001)
+    #        conv1 = tf.nn.conv2d(x, kernel1, [1, 1, 1, 1], padding='SAME')
+    #        biases1 = _variable_on_cpu('biases1', [n_ch_1], tf.constant_initializer(0.0))
+    #        h = tf.nn.bias_add(conv1, biases1)
+    #
+    #        kernel2 = _variable_with_weight_decay('weights2',
+    #                    shape=[k_h, k_w, h.get_shape().as_list()[3], n_ch],
+    #                    stddev=5e-2,
+    #                    wd=0.0001)
+    #        conv2 = tf.nn.conv2d(h, kernel2, [1, s_h, s_w, 1], padding='SAME')
+    #        biases2 = _variable_on_cpu('biases2', [n_ch], tf.constant_initializer(0.0))
+    #        h = tf.nn.bias_add(conv2, biases2, name=scope_name+'_res')
+    #        _activation_summary(h)
+    #        return h
+
+    def conv2d(x, k_h, k_w, n_ch, s_h, s_w, is_train, scope_name):
+        with tf.variable_scope(scope_name):
+            kernel = _variable_with_weight_decay('weights',
+                        shape=[k_h, k_w, x.get_shape().as_list()[3], n_ch],
+                        stddev=5e-2,
+                        wd=FLAGS.weight_decay)
+            conv = tf.nn.conv2d(x, kernel, [1, s_h, s_w, 1], padding='SAME')
+            biases = _variable_on_cpu('biases', [n_ch], tf.constant_initializer(0.0))
+            h = tf.nn.bias_add(conv, biases, name=scope_name+'_res')
+            return h
+
+    def lcnn_resnet_block(x, k_h, k_w, n_ch, downsample, is_train, scope_name):
+        with tf.variable_scope(scope_name):
+            in_depth = x.get_shape().as_list()[3]
+            if downsample:
+                s_h, s_w = 2, 2
+                filter_ = [1,2,2,1]
+                inpt = tf.nn.max_pool(x, ksize=filter_, strides=filter_, padding='SAME')
+            else:
+                s_h, s_w = 1, 1
+                inpt = x
+
+            if in_depth != n_ch: # different number of channels
+                inpt = tf.pad(inpt, [[0,0], [0,0], [0,0], [0, n_ch - in_depth]])
+
+            h = sparse_lcnn_conv2d(x, k_h, k_w, n_ch, 1, 1,
+                is_train=is_train, scope_name='conv1')
+            h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                trainable=True, is_training=is_train, reuse=False, scope='bn_1')
+            h = tf.nn.relu(h)
+
+            h = sparse_lcnn_conv2d(h, k_h, k_w, n_ch, s_h, s_w,
+                is_train=is_train, scope_name='conv2')
+            h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+                trainable=True, is_training=is_train, reuse=False, scope='bn_2')
+            h = tf.nn.relu(h + inpt)
+            return h
+
+    #def resnet_block(x, k_h, k_w, n_ch, downsample, is_train, scope_name):
+    #    with tf.variable_scope(scope_name):
+    #        in_depth = x.get_shape().as_list()[3]
+    #        if downsample:
+    #            s_h, s_w = 2, 2
+    #            filter_ = [1,2,2,1]
+    #            inpt = tf.nn.max_pool(x, ksize=filter_, strides=filter_, padding='SAME')
+    #        else:
+    #            s_h, s_w = 1, 1
+    #            inpt = x
+    #
+    #        if in_depth != n_ch: # different number of channels
+    #            inpt = tf.pad(inpt, [[0,0], [0,0], [0,0], [0, n_ch - in_depth]])
+    #
+    #        h = conv2d(x, k_h, k_w, n_ch, 1, 1,
+    #            is_train=is_train, scope_name='conv1')
+    #        h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+    #            trainable=True, is_training=is_train, reuse=False, scope='bn_1')
+    #        h = tf.nn.relu(h)
+    #
+    #        h = conv2d(h, k_h, k_w, n_ch, s_h, s_w,
+    #            is_train=is_train, scope_name='conv2')
+    #        h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+    #            trainable=True, is_training=is_train, reuse=False, scope='bn_2')
+    #        h = tf.nn.relu(h + inpt)
+    #        return h
+
+    n_blocks = 3
+    n_f = 16
+    in_shape = images.get_shape().as_list()
+
+    h = sparse_lcnn_conv2d(images, k_h=3, k_w=3, n_ch=n_f, s_h=1, s_w=1,
+        is_train=is_train, scope_name='conv_init')
+    h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+        trainable=True, is_training=is_train, reuse=False, scope='bn')
+    h = tf.nn.relu(h)
+
+    for i in xrange(0, n_blocks):
+        downsample = (i == n_blocks - 1)
+        h = lcnn_resnet_block(h, k_h=3, k_w=3, n_ch=n_f, is_train=is_train,
+            downsample=downsample, scope_name='resnet_1_{}'.format(i))
+
+    for i in xrange(0, n_blocks):
+        downsample = (i == n_blocks - 1)
+        h = lcnn_resnet_block(h, k_h=3, k_w=3, n_ch=n_f*2, is_train=is_train,
+            downsample=downsample, scope_name='resnet_2_{}'.format(i))
+
+    for i in xrange(0, n_blocks):
+        downsample = (i == n_blocks - 1)
+        h = lcnn_resnet_block(h, k_h=3, k_w=3, n_ch=n_f*4, is_train=is_train,
+            downsample=downsample, scope_name='resnet_3_{}'.format(i))
+
+    h = tf.nn.avg_pool(h, ksize=[1,in_shape[1]/8,in_shape[1]/8,1],
+                       strides=[1,1,1,1], padding='VALID')
+    h = conv2d(h, k_h=1, k_w=1, n_ch=NUM_CLASSES, s_h=1, s_w=1,
+               is_train=is_train, scope_name='fc')
+    h = tf.squeeze(h)
+
+    # output average sparsity
+    avg_sparsity = tf.reduce_mean(tf.get_collection('sparsities'))
+    tf.scalar_summary('average_sparsity', avg_sparsity)
+
+    return h
 
 
 def loss(logits, labels):
@@ -333,11 +756,10 @@ def train(total_loss, global_step):
     train_op: op for training.
   """
   # Variables that affect learning rate.
-  num_batches_per_epoch = NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN / FLAGS.batch_size
-  decay_steps = int(num_batches_per_epoch * NUM_EPOCHS_PER_DECAY)
+  decay_steps = FLAGS.num_updates_per_decay
 
   # Decay the learning rate exponentially based on the number of steps.
-  lr = tf.train.exponential_decay(INITIAL_LEARNING_RATE,
+  lr = tf.train.exponential_decay(FLAGS.initial_lr,
                                   global_step,
                                   decay_steps,
                                   LEARNING_RATE_DECAY_FACTOR,

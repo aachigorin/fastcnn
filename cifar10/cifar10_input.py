@@ -27,13 +27,14 @@ import tensorflow as tf
 # Process images of this size. Note that this differs from the original CIFAR
 # image size of 32 x 32. If one alters this number, then the entire model
 # architecture will change and any model would need to be retrained.
-IMAGE_SIZE = 24
+IMAGE_SIZE = 32
 
 # Global constants describing the CIFAR-10 data set.
 NUM_CLASSES = 10
 NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN = 50000
 NUM_EXAMPLES_PER_EPOCH_FOR_EVAL = 10000
 
+FLAGS = tf.app.flags.FLAGS
 
 def read_cifar10(filename_queue):
   """Reads and parses examples from CIFAR10 data files.
@@ -162,24 +163,41 @@ def distorted_inputs(data_dir, batch_size):
   height = IMAGE_SIZE
   width = IMAGE_SIZE
 
-  # Image processing for training the network. Note the many random
-  # distortions applied to the image.
+  if FLAGS.augmentation_type == 'full':
+    # Image processing for training the network. Note the many random
+    # distortions applied to the image.
 
-  # Randomly crop a [height, width] section of the image.
-  distorted_image = tf.random_crop(reshaped_image, [height, width, 3])
+    # Randomly crop a [height, width] section of the image.
+    padded_image = tf.image.resize_image_with_crop_or_pad(reshaped_image,
+                    width + 2 * 4, height + 2 * 4)
+    distorted_image = tf.random_crop(padded_image, [height, width, 3])
+    #distorted_image = tf.random_crop(reshaped_image, [height, width, 3])
 
-  # Randomly flip the image horizontally.
-  distorted_image = tf.image.random_flip_left_right(distorted_image)
+    # Randomly flip the image horizontally.
+    distorted_image = tf.image.random_flip_left_right(distorted_image)
 
-  # Because these operations are not commutative, consider randomizing
-  # the order their operation.
-  distorted_image = tf.image.random_brightness(distorted_image,
+    # Because these operations are not commutative, consider randomizing
+    # the order their operation.
+    distorted_image = tf.image.random_brightness(distorted_image,
                                                max_delta=63)
-  distorted_image = tf.image.random_contrast(distorted_image,
+    distorted_image = tf.image.random_contrast(distorted_image,
                                              lower=0.2, upper=1.8)
+    # Subtract off the mean and divide by the variance of the pixels.
+    float_image = tf.image.per_image_whitening(distorted_image)
+  if FLAGS.augmentation_type == 'simple':
+    reshaped_image -= 128
+    padded_image = tf.image.resize_image_with_crop_or_pad(reshaped_image,
+                    width + 2 * 4, height + 2 * 4)
+    distorted_image = tf.random_crop(padded_image, [height, width, 3])
+    distorted_image = tf.image.random_flip_left_right(distorted_image)
+    float_image = distorted_image
+  if FLAGS.augmentation_type == 'no':
+    distorted_image = reshaped_image
+    # Subtract off the mean and divide by the variance of the pixels.
+    float_image = tf.image.per_image_whitening(distorted_image)
+  else:
+    raise Exception('Unknown augmentation type {}'.format(FLAGS.augmentation_type))
 
-  # Subtract off the mean and divide by the variance of the pixels.
-  float_image = tf.image.per_image_whitening(distorted_image)
 
   # Ensure that the random shuffling has good mixing properties.
   min_fraction_of_examples_in_queue = 0.4
@@ -234,7 +252,12 @@ def inputs(eval_data, data_dir, batch_size):
                                                          width, height)
 
   # Subtract off the mean and divide by the variance of the pixels.
-  float_image = tf.image.per_image_whitening(resized_image)
+  if FLAGS.augmentation_type == 'full' or FLAGS.augmentation_type == 'no':
+    float_image = tf.image.per_image_whitening(resized_image)
+  elif FLAGS.augmentation_type == 'simple':
+    float_image = resized_image - 128
+  else:
+    raise Exception('Unknown augmentation type {}'.format(FLAGS.augmentation_type))
 
   # Ensure that the random shuffling has good mixing properties.
   min_fraction_of_examples_in_queue = 0.4
