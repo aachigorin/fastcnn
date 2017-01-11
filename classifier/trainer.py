@@ -28,11 +28,11 @@ tf.app.flags.DEFINE_float('gpu_memory_ratio', 0.4,
 
 tf.app.flags.DEFINE_integer('batch_size', 128,
                             """Number of images to process in a batch.""")
-tf.app.flags.DEFINE_integer('max_steps', 100000,
+tf.app.flags.DEFINE_integer('max_steps', 70000,
                             """Number of batches to run.""")
 tf.app.flags.DEFINE_string('optimizer', 'sgd_momentum',
                            """Optimizer of choice""")
-tf.app.flags.DEFINE_float('initial_lr', 0.1,
+tf.app.flags.DEFINE_string('lr_schedule', '0:0.1,32000:0.01,48000:0.001',
                           """Learning rate to start with""")
 tf.app.flags.DEFINE_integer('num_updates_per_decay', 32000,
                             """Number of updates after which we drop learning rate""")
@@ -96,13 +96,12 @@ def train():
       # optimizer
       global_step = tf.get_variable('global_step', [],
                       initializer=tf.constant_initializer(0),
-                      trainable=False)
+                      trainable=False,
+                      dtype=tf.int32)
 
-      lr = tf.train.exponential_decay(FLAGS.initial_lr,
-                                      global_step,
-                                      FLAGS.num_updates_per_decay,
-                                      FLAGS.lr_decay_factor,
-                                      staircase=True)
+      boundaries = [int(x.split(':')[0]) for x in FLAGS.lr_schedule.split(',')][1:]
+      values = [float(x.split(':')[1]) for x in FLAGS.lr_schedule.split(',')]
+      lr = tf.train.piecewise_constant(global_step, boundaries, values)
 
       if FLAGS.optimizer == 'sgd_momentum':
           opt = tf.train.MomentumOptimizer(lr, momentum=0.9)
