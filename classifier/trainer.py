@@ -7,7 +7,7 @@ import os
 import re
 import numpy as np
 
-from reader import Cifar10Reader 
+from reader import Cifar10Reader
 from model import Cifar10Resnet18
 
 
@@ -34,7 +34,7 @@ tf.app.flags.DEFINE_string('optimizer', 'sgd_momentum',
                            """Optimizer of choice""")
 tf.app.flags.DEFINE_float('initial_lr', 0.1,
                           """Learning rate to start with""")
-tf.app.flags.DEFINE_integer('num_updates_per_decay', 30000,
+tf.app.flags.DEFINE_integer('num_updates_per_decay', 32000,
                             """Number of updates after which we drop learning rate""")
 tf.app.flags.DEFINE_float('lr_decay_factor', 0.1,
                           """Decay value""")

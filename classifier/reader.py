@@ -27,6 +27,9 @@ class GenericReader(object):
 class Cifar10Reader(GenericReader):
   HEIGHT = 32
   WIDTH = 32
+  # copyed from here: https://github.com/facebook/fb.resnet.torch/blob/master/datasets/cifar10.lua
+  MEAN = [125.3, 123.0, 113.9]
+  STD = [63.0,  62.1,  66.7]
 
   class DatasetPart(object):
     train = 'train'
@@ -78,18 +81,17 @@ class Cifar10Reader(GenericReader):
 
   def simple_preprocess(self, image):
     with tf.name_scope('simple_preprocess'):
-      image = tf.image.resize_image_with_crop_or_pad(image,
-                        Cifar10Reader.WIDTH, Cifar10Reader.HEIGHT)
-      image = image - tf.reduce_mean(image, [0, 1])
+      image = (image - Cifar10Reader.MEAN) / Cifar10Reader.STD
     return image
+
 
   def random_simple_preprocess(self, image):
     with tf.name_scope('random_simple_preprocess'):
+      image = (image - Cifar10Reader.MEAN) / Cifar10Reader.STD
+      image = tf.image.random_flip_left_right(image)
       image = tf.image.resize_image_with_crop_or_pad(image,
                         Cifar10Reader.WIDTH + 2 * 4, Cifar10Reader.HEIGHT + 2 * 4)
       image = tf.random_crop(image, [Cifar10Reader.WIDTH, Cifar10Reader.HEIGHT, 3])
-      image = tf.image.random_flip_left_right(image)
-      image = image - tf.reduce_mean(image, [0, 1])
     return image
 
 
