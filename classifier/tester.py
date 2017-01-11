@@ -12,9 +12,9 @@ FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_string('train_dir', '/tmp/cifar10_train',
                            """Directory where to write event logs """
                            """and checkpoint.""")
-tf.app.flags.DEFINE_integer('num_examples', '1000',
+tf.app.flags.DEFINE_integer('num_examples', '10000',
                            """.""")
-tf.app.flags.DEFINE_string('dataset_part', 'val',
+tf.app.flags.DEFINE_string('dataset_part', 'test',
                            """.""")
 tf.app.flags.DEFINE_integer('eval_interval_secs', '300',
                            """.""")
@@ -27,25 +27,34 @@ class Tester(object):
   def __init__(self, name, data_dir, model_dir, dataset_part, num_examples):
     self.model_dir = model_dir
     self.num_examples = num_examples
+    self.dataset_part = dataset_part
 
     with tf.name_scope(name):
-      with tf.name_scope('reader'):
-        val_reader = Cifar10Reader(data_dir=data_dir, batch_size=FLAGS.batch_size,
+      with tf.name_scope('tester_reader') as scope:
+        reader = Cifar10Reader(data_dir=data_dir, batch_size=FLAGS.batch_size,
                                part=dataset_part,
                                preprocessing=Cifar10Reader.Preprocessing.simple)
-        val_images, val_labels = val_reader.get_batch()
+        images, labels = reader.get_batch()
+        self.labels = labels # TODO: remove this
+        self.reader_summaries = tf.summary.merge(
+          tf.get_collection(tf.GraphKeys.SUMMARIES, scope))
 
       with tf.name_scope('model') as scope:
         model = Cifar10Resnet18()
-        logits = model.inference(val_images, is_train=False)
-        self.total_loss, self.top1 = model.loss(logits, val_labels) 
+        logits = model.inference(images, is_train=False)
+        self.total_loss, self.top1 = model.loss(logits, labels) 
 
       self.saver = tf.train.Saver() 
+      self.summary_writer = tf.summary.FileWriter(FLAGS.train_dir,
+                              tf.get_default_graph())
 
 
   def eval(self):
-    with tf.Session() as sess:
-      sess.run(tf.initialize_all_variables())
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth=True
+
+    with tf.Session(config=config) as sess:
+      sess.run(tf.global_variables_initializer())
       coord = tf.train.Coordinator()
       threads = tf.train.start_queue_runners(sess=sess,
                   collection=tf.GraphKeys.QUEUE_RUNNERS, coord=coord)
@@ -67,15 +76,28 @@ class Tester(object):
       num_iters = FLAGS.num_examples // FLAGS.batch_size
       count_loss = 0.
       count_top1 = 0.
-
       for i in xrange(num_iters):
-        loss_val, top1_val = sess.run([self.total_loss, self.top1])
+        labels_val, loss_val, top1_val, reader_summaries_str = sess.run(
+          [self.labels, self.total_loss, self.top1, self.reader_summaries])
         count_loss += loss_val
         count_top1 += top1_val
+      avg_loss = count_loss / num_iters
+      top1_acc = count_top1 / num_iters
 
       coord.request_stop()
       coord.join(threads, stop_grace_period_secs=10)
-      return count_loss / num_iters, count_top1 / num_iters
+
+      # adding summaries
+      self.summary_writer.add_summary(reader_summaries_str, global_step)
+
+      summary = tf.Summary()
+      summary.value.add(tag='{}/total_loss'.format(self.dataset_part),
+                        simple_value=avg_loss)
+      summary.value.add(tag='{}/top1_accuracy'.format(self.dataset_part),
+                        simple_value=top1_acc)
+      self.summary_writer.add_summary(summary, global_step)
+
+      return avg_loss, top1_acc
 
 
 def main(unused_argv=None):
@@ -83,7 +105,7 @@ def main(unused_argv=None):
                   FLAGS.dataset_part, FLAGS.num_examples)
   while True:
     loss, top1 = tester.eval()
-    print('{} results. total_loss = {}, top1 accuracy = {}'.format(
+    print('{} results. total_loss = {}, top1_accuracy = {}'.format(
           FLAGS.dataset_part, loss, top1))
     time.sleep(FLAGS.eval_interval_secs)
     if FLAGS.run_once:

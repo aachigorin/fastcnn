@@ -9,6 +9,8 @@ import tensorflow as tf
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_float('weight_decay', 0.0001,
                            'Global weight decay')
+tf.app.flags.DEFINE_float('batch_norm_decay', 0.9,
+                           'Global weight decay')
 
 
 class Model(object):
@@ -77,13 +79,13 @@ def resnet_block(x, k_h, k_w, n_ch, downsample, is_train, scope):
 
         h = conv2d(x, k_h, k_w, n_ch, s_h, s_w,
             is_train=is_train, scope='conv1')
-        h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+        h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
             trainable=True, is_training=is_train, reuse=False, scope='bn_1')
         h = tf.nn.relu(h)
 
         h = conv2d(h, k_h, k_w, n_ch, 1, 1,
             is_train=is_train, scope='conv2')
-        h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+        h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
             trainable=True, is_training=is_train, reuse=False, scope='bn_2')
         h = tf.nn.relu(h + inpt)
         return h
@@ -94,14 +96,14 @@ class Cifar10Resnet18(Model):
   NUM_CLASSES = 10
 
   def inference(self, images, is_train):
-    with tf.name_scope('resnet18_model'):
+    with tf.name_scope('rnet18_model'):
       n_blocks = 3
       n_f = 16
       in_shape = images.get_shape().as_list()
 
       h = conv2d(images, k_h=3, k_w=3, n_ch=n_f, s_h=1, s_w=1,
           is_train=is_train, scope='conv_0')
-      h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
          trainable=True, is_training=is_train, reuse=False, scope='bn')
       h = tf.nn.relu(h)
 
@@ -122,23 +124,27 @@ class Cifar10Resnet18(Model):
 
       h = tf.nn.avg_pool(h, ksize=[1,in_shape[1]/8,in_shape[2]/8,1],
                          strides=[1,1,1,1], padding='VALID')
-      h = tf.reshape(h, [in_shape[0], -1])
-      h = tf.contrib.layers.fully_connected(inputs=h, activation_fn=None,
-            num_outputs=Cifar10Resnet18.NUM_CLASSES, scope='fc')
-      h = tf.squeeze(h)
+      h = conv2d(h, k_h=1, k_w=1, n_ch=10, s_h=1, s_w=1,
+                    is_train=is_train, scope='fc')
+      # tf.contrib.layers.fully_connected seems not having biases in default configuration
+      #h = tf.reshape(h, [in_shape[0], -1])
+      #h = tf.contrib.layers.fully_connected(inputs=h, activation_fn=None,
+      #      num_outputs=Cifar10Resnet18.NUM_CLASSES, scope='fc')
+      h = tf.squeeze(h, axis=[1,2])
       return h
 
 
   def loss(self, logits, labels):
-    with tf.name_scope('resnet18_loss'):
+    with tf.name_scope('rnet18_loss') as scope:
       labels = tf.cast(labels, tf.int64)
       cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
         logits, labels, name='cross_entropy_per_example')
       cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
       tf.add_to_collection('losses', cross_entropy_mean)
 
-      top_1 = tf.reduce_mean(tf.cast(tf.nn.in_top_k(logits, labels, 1), tf.float32))
+      top1_acc = tf.reduce_mean(tf.cast(tf.nn.in_top_k(logits, labels, 1), tf.float32))
+      total_loss = tf.add_n(tf.get_collection('losses'), name='total_loss')
+      tf.summary.scalar(scope + 'top1_accuracy', top1_acc)
+      tf.summary.scalar(scope + 'total_loss', total_loss)
 
-      # The total loss is defined as the cross entropy loss plus all of the weight
-      # decay terms (L2 loss).
-      return tf.add_n(tf.get_collection('losses'), name='total_loss'), top_1
+      return total_loss, top1_acc

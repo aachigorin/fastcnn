@@ -9,7 +9,6 @@ import numpy as np
 
 from reader import Cifar10Reader 
 from model import Cifar10Resnet18
-from tester import Tester
 
 
 FLAGS = tf.app.flags.FLAGS
@@ -43,17 +42,16 @@ tf.app.flags.DEFINE_float('lr_decay_factor', 0.1,
 
 def tower_loss(images, labels, model, is_train, scope):
   logits = model.inference(images, is_train=is_train)
-  _, cl_loss = model.loss(logits, labels)
+  _, top1_loss = model.loss(logits, labels)
   losses = tf.get_collection('losses', scope)
   total_loss = tf.add_n(losses, name='total_loss')
   for l in losses:
     loss_name = re.sub('%tower_[0-9]*/', '', l.op.name)
-    tf.scalar_summary(loss_name, l)
-  #tf.scalar_summary('classification_accuracy', 1 - cl_loss)
+    tf.summary.scalar(loss_name, l)
 
   update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS) 
   updates = tf.group(*update_ops) # For correct batch norm execution
-  with tf.control_dependencies([updates]):
+  with tf.control_dependencies([updates, top1_loss]):
     total_loss = tf.identity(total_loss)
   return total_loss
 
@@ -80,31 +78,20 @@ def average_gradients(tower_grads):
     v = grad_and_vars[0][1]
     grad_and_var = (grad, v)
     average_grads.append(grad_and_var)
-  #for g, v in average_grads:
-  #  print(g, v.name)
   return average_grads
 
 
 def train():
-  val_tester = Tester('val_tester', FLAGS.data_dir,
-                      FLAGS.train_dir, Cifar10Reader.DatasetPart.val,
-                      num_examples=1000)
-
-  #with tf.name_scope('test_set_reader'):
-  #  test_reader = Cifar10Reader(data_dir=FLAGS.data_dir, batch_size=128,
-  #                         part=Cifar10Reader.DatasetPart.test,
-  #                         preprocessing=Cifar10Reader.Preprocessing.simple)
-  #  test_images, test_labels = test_reader.get_batch()
-
   train_graph = tf.Graph()
   with train_graph.as_default() as g:
-    with g.name_scope('train_graph'):
+    with g.name_scope('train'):
       # readers
-      with tf.name_scope('train_set_reader'):
+      with tf.name_scope('trainer_reader') as scope:
         train_reader = Cifar10Reader(data_dir=FLAGS.data_dir, batch_size=128,
                                part=Cifar10Reader.DatasetPart.train,
                                preprocessing=Cifar10Reader.Preprocessing.random_simple)
-        train_images, train_labels = train_reader.get_batch() 
+        images, labels = train_reader.get_batch()
+        reader_summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
 
       # optimizer
       global_step = tf.get_variable('global_step', [],
@@ -124,13 +111,12 @@ def train():
       else:
           raise Exception('Unknown optimizer type {}'.format(FLAGS.optimizer))
 
-      # towers
       tower_grads = []
       for i in xrange(FLAGS.num_gpus):
         with tf.device('/gpu:{}'.format(i)):
-          with tf.name_scope('tower_{}'.format(i)) as scope:
+          with tf.name_scope('t_{}'.format(i)) as scope:
             model = Cifar10Resnet18()
-            loss = tower_loss(train_images, train_labels, model,
+            loss = tower_loss(images, labels, model,
                               is_train=True, scope=scope)
             tf.get_variable_scope().reuse_variables()
             summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
@@ -141,10 +127,10 @@ def train():
       train_op = opt.apply_gradients(grads, global_step=global_step)
 
       # saver
-      saver = tf.train.Saver(tf.all_variables())
+      saver = tf.train.Saver(tf.global_variables())
 
-      summaries.append(tf.scalar_summary('learning_rate', lr))
-      summary_op = tf.merge_summary(summaries)
+      summaries.append(tf.summary.scalar('learning_rate', lr))
+      summary_op = tf.summary.merge(summaries + reader_summaries)
 
       # creating a session
       config = tf.ConfigProto()
@@ -152,29 +138,19 @@ def train():
       config.gpu_options.visible_device_list=FLAGS.gpus
       config.allow_soft_placement=True
       config.log_device_placement=FLAGS.log_device_placement
+      config.gpu_options.allow_growth=True
       sess = tf.Session(config=config)
-      sess.run(tf.initialize_all_variables())
+      sess.run(tf.global_variables_initializer())
 
       # Start the queue runners.
-      #coord = tf.train.Coordinator()
-      #tf.train.start_queue_runners(sess=sess, coord=coord)
-      print('Queue runners')
-      print(tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS))
-      for r in tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS):
-        print(r.name)
       tf.train.start_queue_runners(sess=sess)
 
-      summary_writer = tf.train.SummaryWriter(FLAGS.train_dir, sess.graph)
+      summary_writer = tf.summary.FileWriter(FLAGS.train_dir, sess.graph)
       for step in xrange(FLAGS.max_steps):
         start_time = time.time()
         _, loss_value = sess.run([train_op, loss])
         duration = time.time() - start_time
         assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
-
-        print('train_before ', sess.graph)
-        if step % 10 == 0:
-          print('Validation error = {}'.format(val_tester.eval()))
-        print('train_after ', sess.graph)
 
         if step % 10 == 0:
           num_examples_per_step = FLAGS.batch_size * FLAGS.num_gpus
