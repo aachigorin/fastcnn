@@ -1,0 +1,33 @@
+import tensorflow as tf
+
+import fastcnn.classifier.tester as tester
+from fastcnn.dataset.cifar10_reader import Cifar10Reader
+
+from model import Cifar10Resnet18
+
+
+FLAGS = tf.app.flags.FLAGS
+
+
+def create_reader():
+  def simple_preprocessor(image):
+    with tf.name_scope('simple_preprocess'):
+      image = (image - Cifar10Reader.MEAN) / Cifar10Reader.STD
+    return image
+
+  return Cifar10Reader(data_dir=FLAGS.data_dir,
+          batch_size=FLAGS.batch_size,
+          part=Cifar10Reader.DatasetPart.test,
+          processor=simple_preprocessor)
+
+
+def create_model():
+  return Cifar10Resnet18()
+
+
+def main(argv=None):  # pylint: disable=unused-argument
+  tester.test(create_model, create_reader)
+
+
+if __name__ == '__main__':
+  tf.app.run()

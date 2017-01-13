@@ -33,12 +33,12 @@ class Cifar10Reader(BaseReader):
     random_simple = 'random_simple'
 
 
-  def __init__(self, data_dir, batch_size, part=DatasetPart.train,
-      preprocessing=Preprocessing.simple):
+  def __init__(self, data_dir, processor, batch_size, part):
+  #    preprocessing=Preprocessing.simple):
     self.data_dir = os.path.join(data_dir, 'cifar-10-batches-bin')
     self.batch_size = batch_size
     self.part = part
-    self.preprocessing = preprocessing
+    #self.preprocessing = preprocessing
     Cifar10Reader._maybe_download_and_extract(data_dir) 
 
     if self.part == Cifar10Reader.DatasetPart.train:
@@ -63,14 +63,15 @@ class Cifar10Reader(BaseReader):
 
     # read examples from files in the filename queue.
     read_input = self._read_cifar10(filename_queue)
-    reshaped_image = tf.cast(read_input.uint8image, tf.float32)
+    image = tf.cast(read_input.uint8image, tf.float32)
+    preprocessed_image = processor(image)
 
-    if self.preprocessing == Cifar10Reader.Preprocessing.simple:
-      preprocessed_image = self.simple_preprocess(reshaped_image)
-    elif self.preprocessing == Cifar10Reader.Preprocessing.random_simple:
-      preprocessed_image = self.random_simple_preprocess(reshaped_image)
-    else:
-      raise Exception('Unknown preprocessing {}'.format(self.preprocessing))
+    #if self.preprocessing == Cifar10Reader.Preprocessing.simple:
+    #  preprocessed_image = self.simple_preprocess(image)
+    #elif self.preprocessing == Cifar10Reader.Preprocessing.random_simple:
+    #  preprocessed_image = self.random_simple_preprocess(image)
+    #else:
+    #  raise Exception('Unknown preprocessing {}'.format(self.preprocessing))
 
     #self.raw_img = preprocessed_image
     do_shuffle = self.part == Cifar10Reader.DatasetPart.train
@@ -87,22 +88,6 @@ class Cifar10Reader(BaseReader):
 
   def get_batch(self):
     return self.result_batch
-
-
-  def simple_preprocess(self, image):
-    with tf.name_scope('simple_preprocess'):
-      image = (image - Cifar10Reader.MEAN) / Cifar10Reader.STD
-    return image
-
-
-  def random_simple_preprocess(self, image):
-    with tf.name_scope('random_simple_preprocess'):
-      image = (image - Cifar10Reader.MEAN) / Cifar10Reader.STD
-      image = tf.image.random_flip_left_right(image)
-      image = tf.image.resize_image_with_crop_or_pad(image,
-                        Cifar10Reader.WIDTH + 2 * 4, Cifar10Reader.HEIGHT + 2 * 4)
-      image = tf.random_crop(image, [Cifar10Reader.WIDTH, Cifar10Reader.HEIGHT, 3])
-    return image
 
 
   def _generate_image_and_label_batch(self, image, label, min_queue_examples,
