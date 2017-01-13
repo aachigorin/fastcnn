@@ -1,6 +1,6 @@
 import tensorflow as tf
 
-import trainer
+import fastcnn.classifier.trainer as trainer
 from model import Cifar10Resnet18
 from reader import Cifar10Reader
 

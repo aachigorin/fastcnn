@@ -1,20 +1,27 @@
 from __future__ import print_function
 
-import tensorflow as tf
 import time
-import datetime
 import os
 import re
-import numpy as np
 
-from reader import Cifar10Reader
-from model import Cifar10Resnet18
+import numpy as np
+import tensorflow as tf
+
+
+__all__ = ['train']
 
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_string('train_dir', '/tmp/cifar10_train',
                            """Directory where to write event logs """
                            """and checkpoint.""")
+
+tf.app.flags.DEFINE_integer('loss_output_freq', 50,
+                            """How often to print loss value to stdout.""")
+tf.app.flags.DEFINE_integer('summary_write_freq', 100,
+                            """How often to write summary to disk.""")
+tf.app.flags.DEFINE_integer('backup_freq', 1000,
+                            """How often to save the model.""")
 
 tf.app.flags.DEFINE_integer('num_gpus', 1,
                             """How many GPUs to use.""")
@@ -40,9 +47,83 @@ tf.app.flags.DEFINE_float('lr_decay_factor', 0.1,
                           """Decay value""")
 
 
-def tower_loss(images, labels, model, is_train, scope):
+def train(model, optimizer, reader):
+  with tf.get_default_graph().name_scope('train'):
+    with tf.name_scope('trainer_reader') as scope:
+      reader = reader()
+      images, labels = reader.get_batch()
+      reader_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope) 
+
+    with tf.name_scope('optimizer') as scope:
+      opt = optimizer()
+      global_step = tf.train.get_global_step()
+      optimizer_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope) 
+
+    tower_grads = []
+    for i in xrange(FLAGS.num_gpus):
+      with tf.device('/gpu:{}'.format(i)):
+        with tf.name_scope('t_{}'.format(i)) as scope:
+          model = model()
+          loss, top1_acc = _tower_loss(images, labels, model,
+                             is_train=True, scope=scope)
+          tf.get_variable_scope().reuse_variables()
+          # keep summaries only from the one tower
+          summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
+          grads = opt.compute_gradients(loss)
+          tower_grads.append(grads)
+    grads = _average_gradients(tower_grads)
+    train_op = opt.apply_gradients(grads, global_step=global_step)
+
+    summary_op = tf.summary.merge(summaries + reader_sum + optimizer_sum)
+
+    # creating a session
+    config = tf.ConfigProto()
+    config.gpu_options.per_process_gpu_memory_fraction=FLAGS.gpu_memory_ratio
+    config.gpu_options.visible_device_list=FLAGS.gpus
+    config.allow_soft_placement=True
+    config.gpu_options.allow_growth=True
+    config.log_device_placement=FLAGS.log_device_placement
+    sess = tf.Session(config=config)
+    sess.run(tf.global_variables_initializer())
+
+    # start the queue runners
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+    summary_writer = tf.summary.FileWriter(FLAGS.train_dir, sess.graph)
+    saver = tf.train.Saver(tf.global_variables())
+
+    for step in xrange(FLAGS.max_steps):
+      start_time = time.time()
+      _, loss_val, top1_acc_val = sess.run([train_op, loss, top1_acc])
+      assert not np.isnan(loss_val), 'Model diverged with loss = NaN'
+
+      if step % FLAGS.loss_output_freq == 0:
+        duration = time.time() - start_time
+        num_examples_per_step = FLAGS.batch_size * FLAGS.num_gpus
+        examples_per_sec = num_examples_per_step / duration
+        sec_per_batch = duration / FLAGS.num_gpus
+
+        format_str = ('step %d, loss = %.2f, top1_ac = %.2f (%.1f examples/sec; %.3f '
+                      'sec/batch)')
+        print(format_str % (step, loss_val, top1_acc_val,
+                             examples_per_sec, sec_per_batch))
+
+      if step % FLAGS.summary_write_freq == 0:
+        summary_str = sess.run(summary_op)
+        summary_writer.add_summary(summary_str, step)
+
+      if step % FLAGS.backup_freq == 0 or (step + 1) == FLAGS.max_steps:
+        checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
+        saver.save(sess, checkpoint_path, global_step=step)
+
+    coord.request_stop()
+    coord.join(threads, stop_grace_period_secs=10)
+
+
+def _tower_loss(images, labels, model, is_train, scope):
   logits = model.inference(images, is_train=is_train)
-  _, top1_loss = model.loss(logits, labels)
+  _, top1_acc = model.loss(logits, labels)
   losses = tf.get_collection('losses', scope)
   total_loss = tf.add_n(losses, name='total_loss')
   for l in losses:
@@ -50,13 +131,13 @@ def tower_loss(images, labels, model, is_train, scope):
     tf.summary.scalar(loss_name, l)
 
   update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS) 
-  updates = tf.group(*update_ops) # For correct batch norm execution
-  with tf.control_dependencies([updates, top1_loss]):
+  updates = tf.group(*update_ops) # for correct batch norm execution
+  with tf.control_dependencies([updates, top1_acc]):
     total_loss = tf.identity(total_loss)
-  return total_loss
+  return total_loss, top1_acc
 
 
-def average_gradients(tower_grads):
+def _average_gradients(tower_grads):
   average_grads = []
   for grad_and_vars in zip(*tower_grads):
     # Note that each grad_and_vars looks like the following:
@@ -79,103 +160,3 @@ def average_gradients(tower_grads):
     grad_and_var = (grad, v)
     average_grads.append(grad_and_var)
   return average_grads
-
-
-def train():
-  train_graph = tf.Graph()
-  with train_graph.as_default() as g:
-    with g.name_scope('train'):
-      # readers
-      with tf.name_scope('trainer_reader') as scope:
-        train_reader = Cifar10Reader(data_dir=FLAGS.data_dir, batch_size=128,
-                               part=Cifar10Reader.DatasetPart.train,
-                               preprocessing=Cifar10Reader.Preprocessing.random_simple)
-        images, labels = train_reader.get_batch()
-        reader_summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
-
-      # optimizer
-      global_step = tf.get_variable('global_step', [],
-                      initializer=tf.constant_initializer(0),
-                      trainable=False,
-                      dtype=tf.int32)
-
-      boundaries = [int(x.split(':')[0]) for x in FLAGS.lr_schedule.split(',')][1:]
-      values = [float(x.split(':')[1]) for x in FLAGS.lr_schedule.split(',')]
-      lr = tf.train.piecewise_constant(global_step, boundaries, values)
-
-      if FLAGS.optimizer == 'sgd_momentum':
-          opt = tf.train.MomentumOptimizer(lr, momentum=0.9)
-      elif FLAGS.optimizer == 'adam':
-          opt = tf.train.AdamOptimizer(learning_rate=lr)
-      else:
-          raise Exception('Unknown optimizer type {}'.format(FLAGS.optimizer))
-
-      tower_grads = []
-      for i in xrange(FLAGS.num_gpus):
-        with tf.device('/gpu:{}'.format(i)):
-          with tf.name_scope('t_{}'.format(i)) as scope:
-            model = Cifar10Resnet18()
-            loss = tower_loss(images, labels, model,
-                              is_train=True, scope=scope)
-            tf.get_variable_scope().reuse_variables()
-            summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
-            grads = opt.compute_gradients(loss)
-            tower_grads.append(grads)
-
-      grads = average_gradients(tower_grads)
-      train_op = opt.apply_gradients(grads, global_step=global_step)
-
-      # saver
-      saver = tf.train.Saver(tf.global_variables())
-
-      summaries.append(tf.summary.scalar('learning_rate', lr))
-      summary_op = tf.summary.merge(summaries + reader_summaries)
-
-      # creating a session
-      config = tf.ConfigProto()
-      config.gpu_options.per_process_gpu_memory_fraction=FLAGS.gpu_memory_ratio
-      config.gpu_options.visible_device_list=FLAGS.gpus
-      config.allow_soft_placement=True
-      config.log_device_placement=FLAGS.log_device_placement
-      config.gpu_options.allow_growth=True
-      sess = tf.Session(config=config)
-      sess.run(tf.global_variables_initializer())
-
-      # Start the queue runners.
-      tf.train.start_queue_runners(sess=sess)
-
-      summary_writer = tf.summary.FileWriter(FLAGS.train_dir, sess.graph)
-      for step in xrange(FLAGS.max_steps):
-        start_time = time.time()
-        _, loss_value = sess.run([train_op, loss])
-        duration = time.time() - start_time
-        assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
-
-        if step % 10 == 0:
-          num_examples_per_step = FLAGS.batch_size * FLAGS.num_gpus
-          examples_per_sec = num_examples_per_step / duration
-          sec_per_batch = duration / FLAGS.num_gpus
-
-          format_str = ('step %d, loss = %.2f (%.1f examples/sec; %.3f '
-                        'sec/batch)')
-          print(format_str % (step, loss_value,
-                               examples_per_sec, sec_per_batch))
-
-        if step % 100 == 0:
-          summary_str = sess.run(summary_op)
-          summary_writer.add_summary(summary_str, step)
-
-        if step % 1000 == 0 or (step + 1) == FLAGS.max_steps:
-          checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
-          saver.save(sess, checkpoint_path, global_step=step)
-
-
-def main(argv=None):  # pylint: disable=unused-argument
-  if tf.gfile.Exists(FLAGS.train_dir):
-    tf.gfile.DeleteRecursively(FLAGS.train_dir)
-  tf.gfile.MakeDirs(FLAGS.train_dir)
-  train()
-
-
-if __name__ == '__main__':
-  tf.app.run()
