@@ -20,7 +20,8 @@ class Cifar10Reader(BaseReader):
   WIDTH = 32
 
   MEAN = [125.3, 123.0, 113.9]
-  STD = [63.0,  62.1,  66.7]
+  STD = [63.0,  62.1,  66.7] 
+
 
   class DatasetPart(object):
     train = 'train'
@@ -28,17 +29,10 @@ class Cifar10Reader(BaseReader):
     test = 'test'
 
 
-  class Preprocessing(object):
-    simple = 'simple'
-    random_simple = 'random_simple'
-
-
   def __init__(self, data_dir, processor, batch_size, part):
-  #    preprocessing=Preprocessing.simple):
     self.data_dir = os.path.join(data_dir, 'cifar-10-batches-bin')
     self.batch_size = batch_size
     self.part = part
-    #self.preprocessing = preprocessing
     Cifar10Reader._maybe_download_and_extract(data_dir) 
 
     if self.part == Cifar10Reader.DatasetPart.train:
@@ -66,14 +60,6 @@ class Cifar10Reader(BaseReader):
     image = tf.cast(read_input.uint8image, tf.float32)
     preprocessed_image = processor(image)
 
-    #if self.preprocessing == Cifar10Reader.Preprocessing.simple:
-    #  preprocessed_image = self.simple_preprocess(image)
-    #elif self.preprocessing == Cifar10Reader.Preprocessing.random_simple:
-    #  preprocessed_image = self.random_simple_preprocess(image)
-    #else:
-    #  raise Exception('Unknown preprocessing {}'.format(self.preprocessing))
-
-    #self.raw_img = preprocessed_image
     do_shuffle = self.part == Cifar10Reader.DatasetPart.train
     self.result_batch = self._generate_image_and_label_batch(
             preprocessed_image, read_input.label,

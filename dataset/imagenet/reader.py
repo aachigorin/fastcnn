@@ -1,11 +1,21 @@
 from __future__ import print_function
 
-import imagenet_image_processing as imagenet
+import image_preprocessing as imagenet
 from imagenet_data import ImagenetData
 
 from fastcnn.classifier.reader import BaseReader
 
-if __name__ == '__main__':
-    dataset = ImagenetData('validation')
-    images, labels = imagenet.inputs(dataset)
-    print(images, labels)
+
+class Imagenet2012Reader(BaseReader):
+  def __init__(self, split, batch_size):
+    self.dataset = ImagenetData(split)
+    if split == 'train':
+      self.batch = imagenet.distorted_inputs(self.dataset, batch_size=batch_size)
+    elif split == 'validation':
+      self.batch = imagenet.inputs(self.dataset, batch_size=batch_size)
+    else:
+      raise Exception('Unknown split {}'.format(split))
+
+
+  def get_batch(self):
+    return self.batch

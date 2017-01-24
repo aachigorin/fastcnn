@@ -21,6 +21,8 @@ tf.app.flags.DEFINE_bool('run_once', False,
                            """.""")
 tf.app.flags.DEFINE_integer('batch_size', 128,
                            """.""")
+tf.app.flags.DEFINE_string('gpus', '0',
+                           'Available gpus')
 
 
 def test(model, reader):
@@ -41,6 +43,7 @@ def test(model, reader):
   while True:
     config = tf.ConfigProto()
     config.gpu_options.allow_growth=True
+    config.gpu_options.visible_device_list=FLAGS.gpus
 
     with tf.Session(config=config) as sess:
       sess.run(tf.global_variables_initializer())
@@ -50,6 +53,7 @@ def test(model, reader):
       ckpt = tf.train.get_checkpoint_state(os.path.abspath(FLAGS.train_dir))
       global_step = _get_global_step(ckpt)
       if global_step == None:
+        time.sleep(FLAGS.eval_interval_secs)
         continue
       saver.restore(sess, ckpt.model_checkpoint_path)
 

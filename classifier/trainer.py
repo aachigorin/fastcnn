@@ -18,7 +18,7 @@ tf.app.flags.DEFINE_string('train_dir', '/tmp/cifar10_train',
 
 tf.app.flags.DEFINE_integer('loss_output_freq', 50,
                             """How often to print loss value to stdout.""")
-tf.app.flags.DEFINE_integer('summary_write_freq', 100,
+tf.app.flags.DEFINE_integer('summary_write_freq', 1000,
                             """How often to write summary to disk.""")
 tf.app.flags.DEFINE_integer('backup_freq', 1000,
                             """How often to save the model.""")
@@ -29,7 +29,7 @@ tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
 tf.app.flags.DEFINE_string('gpus', '0',
                            'Available gpus')
-tf.app.flags.DEFINE_float('gpu_memory_ratio', 0.4,
+tf.app.flags.DEFINE_float('gpu_memory_ratio', 0.8,
                            'Ration of gpu memory to lock')
 
 
@@ -41,21 +41,20 @@ tf.app.flags.DEFINE_string('optimizer', 'sgd_momentum',
                            """Optimizer of choice""")
 tf.app.flags.DEFINE_string('lr_schedule', '0:0.1,32000:0.01,48000:0.001',
                           """Learning rate to start with""")
-tf.app.flags.DEFINE_integer('num_updates_per_decay', 32000,
-                            """Number of updates after which we drop learning rate""")
-tf.app.flags.DEFINE_float('lr_decay_factor', 0.1,
-                          """Decay value""")
 
 
-def train(model, optimizer, reader):
+def train(create_model, create_optimizer, create_reader):
   with tf.get_default_graph().name_scope('train'):
     with tf.name_scope('trainer_reader') as scope:
-      reader = reader()
+      reader = create_reader()
       images, labels = reader.get_batch()
       reader_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope) 
 
+    images_splits = tf.split(0, FLAGS.num_gpus, images)
+    labels_splits = tf.split(0, FLAGS.num_gpus, labels)
+
     with tf.name_scope('optimizer') as scope:
-      opt = optimizer()
+      opt = create_optimizer()
       global_step = tf.train.get_global_step()
       optimizer_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope) 
 
@@ -63,14 +62,20 @@ def train(model, optimizer, reader):
     for i in xrange(FLAGS.num_gpus):
       with tf.device('/gpu:{}'.format(i)):
         with tf.name_scope('t_{}'.format(i)) as scope:
-          model = model()
-          loss, top1_acc = _tower_loss(images, labels, model,
+          model = create_model()
+          #loss, top1_acc = _tower_loss(images, labels, model,
+          loss, top1_acc = _tower_loss(images_splits[i], labels_splits[i], model,
                              is_train=True, scope=scope)
           tf.get_variable_scope().reuse_variables()
           # keep summaries only from the one tower
           summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
           grads = opt.compute_gradients(loss)
           tower_grads.append(grads)
+
+          for grad, var in grads:
+            if grad is not None:
+              summaries.append(tf.summary.histogram(var.op.name + '/gradients', grad))
+
     grads = _average_gradients(tower_grads)
     train_op = opt.apply_gradients(grads, global_step=global_step)
 
@@ -96,7 +101,7 @@ def train(model, optimizer, reader):
     for step in xrange(FLAGS.max_steps):
       start_time = time.time()
       _, loss_val, top1_acc_val = sess.run([train_op, loss, top1_acc])
-      assert not np.isnan(loss_val), 'Model diverged with loss = NaN'
+      #assert not np.isnan(loss_val), 'Model diverged with loss = NaN'
 
       if step % FLAGS.loss_output_freq == 0:
         duration = time.time() - start_time
@@ -130,7 +135,7 @@ def _tower_loss(images, labels, model, is_train, scope):
     loss_name = re.sub('%tower_[0-9]*/', '', l.op.name)
     tf.summary.scalar(loss_name, l)
 
-  update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS) 
+  update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
   updates = tf.group(*update_ops) # for correct batch norm execution
   with tf.control_dependencies([updates, top1_acc]):
     total_loss = tf.identity(total_loss)

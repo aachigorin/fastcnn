@@ -3,7 +3,7 @@ import tensorflow as tf
 import fastcnn.classifier.tester as tester
 from fastcnn.dataset.cifar10_reader import Cifar10Reader
 
-from model import Cifar10Resnet18
+from model import Cifar10LCNNResnet18
 
 
 FLAGS = tf.app.flags.FLAGS
@@ -22,7 +22,7 @@ def create_reader():
 
 
 def create_model():
-  return Cifar10Resnet18()
+  return Cifar10LCNNResnet18()
 
 
 def main(argv=None):  # pylint: disable=unused-argument

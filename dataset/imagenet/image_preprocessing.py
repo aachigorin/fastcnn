@@ -41,11 +41,20 @@ from __future__ import division
 from __future__ import print_function
 
 import tensorflow as tf
+import numpy as np
 
 FLAGS = tf.app.flags.FLAGS
 
-tf.app.flags.DEFINE_integer('batch_size', 32,
-                            """Number of images to process in a batch.""")
+tf.app.flags.DEFINE_boolean('preprocess_as_fb3', False,
+                            """Facebook preprocessing method""")
+tf.app.flags.DEFINE_boolean('preprocess_as_fb2', False,
+                            """Facebook preprocessing method""")
+tf.app.flags.DEFINE_boolean('preprocess_as_fb', False,
+                            """Facebook preprocessing method""")
+tf.app.flags.DEFINE_boolean('preprocess_as_fb_full', False,
+                            """Facebook preprocessing method""")
+#tf.app.flags.DEFINE_integer('batch_size', 32,
+#                            """Number of images to process in a batch.""")
 tf.app.flags.DEFINE_integer('image_size', 299,
                             """Provide square images of this size.""")
 tf.app.flags.DEFINE_integer('num_preprocess_threads', 4,
@@ -69,6 +78,14 @@ tf.app.flags.DEFINE_integer('input_queue_memory_factor', 16,
                             """Default is ideal but try smaller values, e.g. """
                             """4, 2 or 1, if host memory is constrained. See """
                             """comments in code for more details.""")
+
+if FLAGS.preprocess_as_fb_full or FLAGS.preprocess_as_fb or FLAGS.preprocess_as_fb2 or\
+   FLAGS.preprocess_as_fb3:
+  _MEAN = [0.485, 0.456, 0.406]
+  _STD = [0.229, 0.224, 0.225]
+else:
+  _MEAN = [0.5, 0.5, 0.5]
+  _STD = [1, 1, 1]
 
 
 def inputs(dataset, batch_size=None, num_preprocess_threads=None):
@@ -194,6 +211,48 @@ def distort_color(image, thread_id=0, scope=None):
     return image
 
 
+def distort_color_fb(image, thread_id=0, scope=None):
+  with tf.op_scope([image], scope, 'distort_color'):
+    color_ordering = thread_id % 2
+
+    if color_ordering == 0:
+      image = tf.image.random_brightness(image, max_delta=0.4)
+      image = tf.image.random_saturation(image, lower=0.6, upper=1.4)
+      #image = tf.image.random_hue(image, max_delta=0.2)
+      image = tf.image.random_contrast(image, lower=0.6, upper=1.4)
+    elif color_ordering == 1:
+      image = tf.image.random_brightness(image, max_delta=0.4)
+      image = tf.image.random_contrast(image, lower=0.6, upper=1.4)
+      image = tf.image.random_saturation(image, lower=0.6, upper=1.4)
+      #image = tf.image.random_hue(image, max_delta=0.2)
+
+    # The random_* ops do not necessarily clamp.
+    image = tf.clip_by_value(image, 0.0, 1.0)
+    return image
+
+
+# less agressive color augmentation
+# for exp6
+def distort_color_fb2(image, thread_id=0, scope=None):
+  with tf.op_scope([image], scope, 'distort_color'):
+    color_ordering = thread_id % 2
+
+    if color_ordering == 0:
+      image = tf.image.random_brightness(image, max_delta=0.1)
+      image = tf.image.random_saturation(image, lower=0.9, upper=1.1)
+      #image = tf.image.random_hue(image, max_delta=0.2)
+      image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+    elif color_ordering == 1:
+      image = tf.image.random_brightness(image, max_delta=0.1)
+      image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+      image = tf.image.random_saturation(image, lower=0.9, upper=1.1)
+      #image = tf.image.random_hue(image, max_delta=0.2)
+
+    # The random_* ops do not necessarily clamp.
+    image = tf.clip_by_value(image, 0.0, 1.0)
+    return image
+
+
 def distort_image(image, height, width, bbox, thread_id=0, scope=None):
   """Distort one image for training a network.
 
@@ -274,6 +333,175 @@ def distort_image(image, height, width, bbox, thread_id=0, scope=None):
     return distorted_image
 
 
+# augmentation more similar to https://github.com/facebook/fb.resnet.torch/blob/master/datasets/transforms.lua
+def distort_image_fb(image, height, width, bbox, thread_id=0, scope=None):
+  rand_size = tf.random_uniform([1], minval=256, maxval=480, dtype=tf.float32)
+  min_size = tf.cast(tf.reduce_min(tf.shape(image)[0:2]), tf.float32)
+  scale = rand_size / min_size
+  cur_shape = tf.cast(tf.shape(image), tf.float32)
+  target_size = tf.reshape(tf.cast([scale * cur_shape[0], scale * cur_shape[1]],
+                           tf.int32), [2])
+  resize_method = thread_id % 4
+  image = tf.image.resize_images(image, target_size,
+                                 method=resize_method)
+
+  # params for exp3
+  #sample_distorted_bounding_box = tf.image.sample_distorted_bounding_box(
+  #      tf.shape(image),
+  #      bounding_boxes=tf.zeros([1,0,4]), # it does not work with []
+  #      aspect_ratio_range=[0.75, 1.33],
+  #      area_range=[0.08, 1.0],
+  #      max_attempts=10,
+  #      use_image_if_no_bounding_boxes=True)
+
+  # params for exp5
+  sample_distorted_bounding_box = tf.image.sample_distorted_bounding_box(
+        tf.shape(image),
+        bounding_boxes=tf.zeros([1,0,4]), # it does not work with []
+        aspect_ratio_range=[0.99, 1.01],
+        area_range=[0.2, 1.0],
+        max_attempts=10,
+        use_image_if_no_bounding_boxes=True)
+
+  bbox_begin, bbox_size, distort_bbox = sample_distorted_bounding_box
+  if not thread_id:
+    image_with_distorted_box = tf.image.draw_bounding_boxes(
+        tf.expand_dims(image, 0), distort_bbox)
+    tf.image_summary('images_with_distorted_bounding_box',
+                     image_with_distorted_box)
+
+  # Crop the image to the specified bounding box.
+  distorted_image = tf.slice(image, bbox_begin, bbox_size)
+
+  resize_method = thread_id % 4
+  distorted_image = tf.image.resize_images(distorted_image, [height, width],
+                                           method=resize_method)
+  distorted_image.set_shape([height, width, 3])
+
+  if not thread_id:
+    tf.image_summary('cropped_resized_image',
+                     tf.expand_dims(distorted_image, 0))
+
+  # params for exp5
+  #distorted_image = distort_color_fb(distorted_image, thread_id)
+  # params for exp7
+  distorted_image = distort_color_fb2(distorted_image, thread_id)
+  distorted_image = tf.image.random_flip_left_right(distorted_image)
+  if not thread_id:
+    tf.image_summary('final_distorted_image',
+                     tf.expand_dims(distorted_image, 0))
+
+  return distorted_image
+
+
+# augmentation more similar to https://github.com/facebook/fb.resnet.torch/blob/master/datasets/transforms.lua
+# params for exp4
+def distort_image_fb2(image, height, width, bbox, thread_id=0, scope=None):
+  rand_size = tf.random_uniform([1], minval=256, maxval=480, dtype=tf.float32)
+  min_size = tf.cast(tf.reduce_min(tf.shape(image)[0:2]), tf.float32)
+  scale = rand_size / min_size
+  cur_shape = tf.cast(tf.shape(image), tf.float32)
+  target_size = tf.cast(tf.reshape([scale * cur_shape[0], scale * cur_shape[1]], [2]), tf.int32)
+  resize_method = thread_id % 4
+  image = tf.image.resize_images(image, target_size,
+                                 method=resize_method)
+
+  # Crop the image to the specified bounding box.
+  dh = tf.random_uniform([1], minval=0, maxval=target_size[0] - 224, dtype=tf.int32)
+  dw = tf.random_uniform([1], minval=0, maxval=target_size[1] - 224, dtype=tf.int32)
+
+  bbox_shift = tf.reshape(tf.pack([dh, dw, [0]]), shape=(3,))
+  bbox_size = tf.reshape(tf.pack([[224], [224], [-1]]), shape=(3,))
+  distorted_image = tf.slice(image, bbox_shift, bbox_size)
+  if not thread_id:
+    bbox_coords = tf.reshape(tf.pack([dh / target_size[0], dw / target_size[1],
+                    (dh+224) / target_size[0], (dw+224) / target_size[1]]),
+                    shape=(1, 1, 4))
+    image_with_distorted_box = tf.image.draw_bounding_boxes(
+        tf.expand_dims(image, 0), tf.cast(bbox_coords, dtype=tf.float32))
+    tf.image_summary('images_with_distorted_bounding_box',
+                     image_with_distorted_box)
+
+  assert_op = tf.Assert(distorted_image.get_shape() == [224, 224, 3],
+                        [distorted_image])
+  resize_method = thread_id % 4
+  #distorted_image = tf.image.resize_images(distorted_image, [height, width],
+  #                                         method=resize_method)
+  distorted_image.set_shape([height, width, 3])
+
+  if not thread_id:
+    tf.image_summary('cropped_resized_image',
+                     tf.expand_dims(distorted_image, 0))
+
+  distorted_image = distort_color_fb2(distorted_image, thread_id)
+  distorted_image = tf.image.random_flip_left_right(distorted_image)
+  if not thread_id:
+    tf.image_summary('final_distorted_image',
+                     tf.expand_dims(distorted_image, 0))
+
+  with tf.control_dependencies([assert_op]):
+    return distorted_image
+
+
+# augmentation more similar to resnet (no color augmentation, only pca augmentation)
+# params for exp8
+def distort_image_fb3(image, height, width, bbox, thread_id=0, scope=None):
+  rand_size = tf.random_uniform([1], minval=256, maxval=480, dtype=tf.float32)
+  min_size = tf.cast(tf.reduce_min(tf.shape(image)[0:2]), tf.float32)
+  scale = rand_size / min_size
+  cur_shape = tf.cast(tf.shape(image), tf.float32)
+  target_size = tf.cast(tf.reshape([scale * cur_shape[0],
+                  scale * cur_shape[1]], [2]), tf.int32)
+  resize_method = thread_id % 4
+  image = tf.image.resize_images(image, target_size,
+                                 method=resize_method)
+
+  # Crop the image to the specified bounding box.
+  dh = tf.random_uniform([1], minval=0,
+       maxval=target_size[0] - 224, dtype=tf.int32)
+  dw = tf.random_uniform([1],
+       minval=0, maxval=target_size[1] - 224, dtype=tf.int32)
+
+  bbox_shift = tf.reshape(tf.pack([dh, dw, [0]]), shape=(3,))
+  bbox_size = tf.reshape(tf.pack([[224], [224], [-1]]), shape=(3,))
+  distorted_image = tf.slice(image, bbox_shift, bbox_size)
+  if not thread_id:
+    bbox_coords = tf.reshape(tf.pack([dh / target_size[0], dw / target_size[1],
+                    (dh+224) / target_size[0], (dw+224) / target_size[1]]),
+                    shape=(1, 1, 4))
+    image_with_distorted_box = tf.image.draw_bounding_boxes(
+        tf.expand_dims(image, 0), tf.cast(bbox_coords, dtype=tf.float32))
+    tf.image_summary('images_with_distorted_bounding_box',
+                     image_with_distorted_box)
+
+  assert_op = tf.Assert(distorted_image.get_shape() == [224, 224, 3],
+                        [distorted_image])
+  resize_method = thread_id % 4
+  distorted_image.set_shape([height, width, 3])
+
+  if not thread_id:
+    tf.image_summary('cropped_resized_image',
+                     tf.expand_dims(distorted_image, 0))
+
+  # pca distortion as in the original alexnet paper
+  eigval = np.asarray([0.2175, 0.0188, 0.0045], dtype=np.float32)
+  eigvec = np.asarray([[-0.5675,  0.7192,  0.4009],
+                       [-0.5808, -0.0045, -0.8140],
+                       [-0.5836, -0.6948,  0.4203]], dtype=np.float32)
+  alpha = tf.random_normal([3], stddev=0.1, dtype=np.float32)
+  cur_rgb_delta = tf.matmul(eigvec, tf.reshape(eigval * alpha, shape=(3,1)))
+
+  # no color distortions
+  #distorted_image = distort_color_fb2(distorted_image, thread_id)
+  distorted_image = tf.image.random_flip_left_right(distorted_image)
+  if not thread_id:
+    tf.image_summary('final_distorted_image',
+                     tf.expand_dims(distorted_image, 0))
+
+  with tf.control_dependencies([assert_op]):
+    return distorted_image
+
+
 def eval_image(image, height, width, scope=None):
   """Prepare one image for evaluation.
 
@@ -295,6 +523,7 @@ def eval_image(image, height, width, scope=None):
     image = tf.image.resize_bilinear(image, [height, width],
                                      align_corners=False)
     image = tf.squeeze(image, [0])
+
     return image
 
 
@@ -323,13 +552,21 @@ def image_preprocessing(image_buffer, bbox, train, thread_id=0):
   width = FLAGS.image_size
 
   if train:
-    image = distort_image(image, height, width, bbox, thread_id)
+    if FLAGS.preprocess_as_fb or FLAGS.preprocess_as_fb_full:
+      image = distort_image_fb(image, height, width, bbox, thread_id)
+    elif FLAGS.preprocess_as_fb2:
+      image = distort_image_fb2(image, height, width, bbox, thread_id)
+    elif FLAGS.preprocess_as_fb3:
+      image = distort_image_fb3(image, height, width, bbox, thread_id)
+    else:
+      image = distort_image(image, height, width, bbox, thread_id)
   else:
-    image = eval_image(image, height, width)
+      image = eval_image(image, height, width)
 
   # Finally, rescale to [-1,1] instead of [0, 1)
-  image = tf.sub(image, 0.5)
-  image = tf.mul(image, 2.0)
+  image = (image - _MEAN) / _STD
+  #image = tf.sub(image, 0.5)
+  #image = tf.mul(image, 2.0)
   return image
 
 
@@ -507,4 +744,4 @@ def batch_inputs(dataset, batch_size, train, num_preprocess_threads=None,
     # Display the training images in the visualizer.
     tf.image_summary('images', images)
 
-    return images, tf.reshape(label_index_batch, [batch_size])
+    return images, tf.reshape(label_index_batch - 1, [batch_size])

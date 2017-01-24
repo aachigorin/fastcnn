@@ -12,14 +12,24 @@ tf.app.flags.DEFINE_float('weight_decay', 0.0001,
                            'Global weight decay')
 tf.app.flags.DEFINE_float('batch_norm_decay', 0.9,
                            'Global weight decay')
+tf.app.flags.DEFINE_integer('channels_reduction_ratio', 4,
+                           """Ratio of channels after 1x1 convolution in lcnn_conv
+                              compared to number of input channels""")
+tf.app.flags.DEFINE_float('c', 0.001,
+                           'c from paper https://arxiv.org/pdf/1611.06473v1.pdf')
+tf.app.flags.DEFINE_float('alpha', 0.001,
+                           'alpha from paper https://arxiv.org/pdf/1611.06473v1.pdf')
+tf.app.flags.DEFINE_boolean('no_bn_in_lcnn_block', False,
+                           'Do not use batch norm between 1x1 and 3x3 convolution in lcnn resnet block')
+tf.app.flags.DEFINE_boolean('no_relu_in_lcnn_block', False,
+                           'Do not use relu between 1x1 and 3x3 convolution in lcnn resnet block')
 
 
-# model class
-class Cifar10Resnet18(BaseModel):
+class Cifar10LCNNResnet18(BaseModel):
   NUM_CLASSES = 10
 
   def inference(self, images, is_train):
-    with tf.name_scope('rnet18_model'):
+    with tf.name_scope('lcnn_rnet18_model'):
       n_blocks = 3
       n_f = 16
       in_shape = images.get_shape().as_list()
@@ -50,11 +60,15 @@ class Cifar10Resnet18(BaseModel):
       h = _conv2d(h, k_h=1, k_w=1, n_ch=10, s_h=1, s_w=1,
                     is_train=is_train, scope='fc')
       h = tf.squeeze(h, axis=[1,2])
+
+      tf.summary.scalar('avg_sparsity',
+        tf.reduce_mean(tf.get_collection('sparsities')))
+
       return h
 
 
   def loss(self, logits, labels):
-    with tf.name_scope('rnet18_loss') as scope:
+    with tf.name_scope('lcnn_rnet18_loss') as scope:
       labels = tf.cast(labels, tf.int64)
       cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
         logits, labels, name='cross_entropy_per_example')
@@ -108,13 +122,9 @@ def _sparse_variable_with_l1_loss(name, shape):
   eps = FLAGS.c / stddev
   alpha = FLAGS.alpha * eps
 
-  _scalar_summary(tf.identity(stddev, name='stddev'))
-  _scalar_summary(tf.identity(eps, name='eps'))
-  _scalar_summary(tf.identity(alpha, name='alpha'))
-
   var = var * tf.cast(tf.abs(var) > eps, tf.float32)
   sparsity = tf.nn.zero_fraction(var, name='weights_sparsity')
-  _scalar_summary(sparsity)
+  tf.summary.scalar('sparsity', sparsity)
   tf.add_to_collection('sparsities', sparsity)
 
   l1_loss = tf.mul(tf.reduce_sum(tf.abs(var)), alpha, name='l1_loss')
@@ -135,21 +145,20 @@ def _conv2d(x, k_h, k_w, n_ch, s_h, s_w, is_train, scope):
     return h
 
 
-def sparse_lcnn_conv2d(x, k_h, k_w, n_ch, s_h, s_w, is_train, scope_name):
-  with tf.variable_scope(scope_name):
+def _sparse_lcnn_conv2d(x, k_h, k_w, n_ch, s_h, s_w, is_train, scope):
+  with tf.variable_scope(scope):
     out_ch_1 = n_ch / FLAGS.channels_reduction_ratio
     in_ch1 = x.get_shape().as_list()[3]
 
     kernel1 = _variable_with_weight_decay('weights_1x1',
                 shape=[1, 1, in_ch1, out_ch_1],
-                stddev=5e-2,
-                wd=0)
+                wd=FLAGS.weight_decay) # TODO: should we use weight decay here?
     conv1 = tf.nn.conv2d(x, kernel1, [1, 1, 1, 1], padding='SAME', name='conv1x1')
     biases1 = _variable_on_cpu('biases_1x1', [out_ch_1], tf.constant_initializer(0.0))
-    h = tf.nn.bias_add(conv1, biases1, name=scope_name+'_res_0')
+    h = tf.nn.bias_add(conv1, biases1, name=scope+'_res_0')
 
     #if FLAGS.batch_norm_after_conv_1x1:
-    h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+    h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
       trainable=True, is_training=is_train, reuse=False, scope='bn_0')
 
     in_ch2 = h.get_shape().as_list()[3]
@@ -157,12 +166,12 @@ def sparse_lcnn_conv2d(x, k_h, k_w, n_ch, s_h, s_w, is_train, scope_name):
                 shape=[k_h, k_w, in_ch2, n_ch])
     conv2 = tf.nn.conv2d(h, kernel2, [1, s_h, s_w, 1], padding='SAME', name='conv_sparse')
     biases2 = _variable_on_cpu('biases_sparse', [n_ch], tf.constant_initializer(0.0))
-    h = tf.nn.bias_add(conv2, biases2, name=scope_name+'_res_1')
+    h = tf.nn.bias_add(conv2, biases2, name=scope+'_res_1')
     return h
 
 
-def _lcnn_resnet_block(x, k_h, k_w, n_ch, downsample, is_train, scope_name):
-  with tf.variable_scope(scope_name):
+def _lcnn_resnet_block(x, k_h, k_w, n_ch, downsample, is_train, scope):
+  with tf.variable_scope(scope):
       in_depth = x.get_shape().as_list()[3]
       if downsample:
           s_h, s_w = 2, 2
@@ -176,43 +185,16 @@ def _lcnn_resnet_block(x, k_h, k_w, n_ch, downsample, is_train, scope_name):
           inpt = tf.pad(inpt, [[0,0], [0,0], [0,0], [0, n_ch - in_depth]])
 
       h = _sparse_lcnn_conv2d(x, k_h, k_w, n_ch, 1, 1,
-          is_train=is_train, scope_name='conv1')
-      h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+          is_train=is_train, scope='conv1')
+      if not FLAGS.no_bn_in_lcnn_block:
+        h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
           trainable=True, is_training=is_train, reuse=False, scope='bn_1')
-      h = tf.nn.relu(h)
+      if not FLAGS.no_relu_in_lcnn_block:
+        h = tf.nn.relu(h)
 
       h = _sparse_lcnn_conv2d(h, k_h, k_w, n_ch, s_h, s_w,
-          is_train=is_train, scope_name='conv2')
-      h = tf.contrib.layers.batch_norm(inputs=h, decay=0.95,
+          is_train=is_train, scope='conv2')
+      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
           trainable=True, is_training=is_train, reuse=False, scope='bn_2')
       h = tf.nn.relu(h + inpt)
       return h
-
-
-# taken from: https://github.com/gcr/torch-residual-networks/blob/master/residual-layers.lua
-#def _resnet_block(x, k_h, k_w, n_ch, downsample, is_train, scope):
-#    with tf.variable_scope(scope):
-#        in_depth = x.get_shape().as_list()[3]
-#        if downsample:
-#            s_h, s_w = 2, 2
-#            filter_ = [1,2,2,1]
-#            inpt = tf.nn.avg_pool(x, ksize=filter_, strides=filter_, padding='SAME')
-#        else:
-#            s_h, s_w = 1, 1
-#            inpt = x
-#
-#        if in_depth != n_ch: # different number of channels
-#            inpt = tf.pad(inpt, [[0,0], [0,0], [0,0], [0, n_ch - in_depth]])
-#
-#        h = _conv2d(x, k_h, k_w, n_ch, s_h, s_w,
-#            is_train=is_train, scope='conv1')
-#        h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
-#            trainable=True, is_training=is_train, reuse=False, scope='bn_1')
-#        h = tf.nn.relu(h)
-#
-#        h = _conv2d(h, k_h, k_w, n_ch, 1, 1,
-#            is_train=is_train, scope='conv2')
-#        h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
-#            trainable=True, is_training=is_train, reuse=False, scope='bn_2')
-#        h = tf.nn.relu(h + inpt)
-#        return h

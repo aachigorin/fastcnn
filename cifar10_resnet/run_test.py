@@ -12,7 +12,7 @@ def main(argv=None):  # pylint: disable=unused-argument
   def create_reader():
     return Cifar10Reader(data_dir=FLAGS.data_dir,
             batch_size=FLAGS.batch_size,
-            part=Cifar10Reader.DatasetPart.train,
+            part=Cifar10Reader.DatasetPart.test,
             preprocessing=Cifar10Reader.Preprocessing.random_simple)
 
   def create_model():
