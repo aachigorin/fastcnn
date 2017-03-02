@@ -1,7 +1,7 @@
 import tensorflow as tf
 
-import fastcnn.classifier.tester as tester
-from fastcnn.dataset.cifar10_reader import Cifar10Reader
+import classifier.tester as tester
+from dataset.cifar10_reader import Cifar10Reader
 
 from model import Cifar10LCNNResnet18
 

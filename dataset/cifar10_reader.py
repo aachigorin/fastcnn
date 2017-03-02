@@ -4,10 +4,11 @@ import os
 import sys
 import urllib
 
+import tarfile
 import scipy.misc
 import tensorflow as tf
 
-from fastcnn.classifier.reader import BaseReader
+from dataset.reader import BaseReader
 
 
 FLAGS = tf.app.flags.FLAGS
@@ -154,7 +155,7 @@ class Cifar10Reader(BaseReader):
         sys.stdout.write('\r>> Downloading %s %.1f%%' % (filename,
             float(count * block_size) / float(total_size) * 100.0))
         sys.stdout.flush()
-      filepath, _ = urllib.request.urlretrieve(DATA_URL, filepath, _progress)
+      filepath, _ = urllib.urlretrieve(DATA_URL, filepath, _progress)
       print()
       statinfo = os.stat(filepath)
       print('Successfully downloaded', filename, statinfo.st_size, 'bytes.')

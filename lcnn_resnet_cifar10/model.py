@@ -4,7 +4,7 @@ import math
 
 import tensorflow as tf
 
-from fastcnn.classifier.model import BaseModel
+from classifier.model import BaseModel
 
 
 FLAGS = tf.app.flags.FLAGS
@@ -71,7 +71,7 @@ class Cifar10LCNNResnet18(BaseModel):
     with tf.name_scope('lcnn_rnet18_loss') as scope:
       labels = tf.cast(labels, tf.int64)
       cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
-        logits, labels, name='cross_entropy_per_example')
+        logits=logits, labels=labels, name='cross_entropy_per_example')
       cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
       tf.add_to_collection('losses', cross_entropy_mean)
 
@@ -102,7 +102,7 @@ def _variable_with_weight_decay(name, shape, wd):
         shape,
         tf.truncated_normal_initializer(stddev=stddev, dtype=tf.float32))
     if wd is not None:
-      weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name='l2_loss')
+      weight_decay = tf.multiply(tf.nn.l2_loss(var), wd, name='l2_loss')
       tf.add_to_collection('losses', weight_decay)
     return var
 
@@ -127,7 +127,7 @@ def _sparse_variable_with_l1_loss(name, shape):
   tf.summary.scalar('sparsity', sparsity)
   tf.add_to_collection('sparsities', sparsity)
 
-  l1_loss = tf.mul(tf.reduce_sum(tf.abs(var)), alpha, name='l1_loss')
+  l1_loss = tf.multiply(tf.reduce_sum(tf.abs(var)), alpha, name='l1_loss')
   tf.add_to_collection('losses', l1_loss)
 
   return var

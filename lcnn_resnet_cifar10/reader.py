@@ -7,7 +7,7 @@ import urllib
 import scipy.misc
 import tensorflow as tf
 
-from fastcnn.classifier.reader import BaseReader
+from dataset.reader import BaseReader
 
 
 FLAGS = tf.app.flags.FLAGS

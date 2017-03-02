@@ -50,8 +50,8 @@ def train(create_model, create_optimizer, create_reader):
       images, labels = reader.get_batch()
       reader_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope) 
 
-    images_splits = tf.split(0, FLAGS.num_gpus, images)
-    labels_splits = tf.split(0, FLAGS.num_gpus, labels)
+    images_splits = tf.split(images, axis=0, num_or_size_splits=FLAGS.num_gpus)
+    labels_splits = tf.split(labels, axis=0, num_or_size_splits=FLAGS.num_gpus)
 
     with tf.name_scope('optimizer') as scope:
       opt = create_optimizer()
@@ -63,14 +63,15 @@ def train(create_model, create_optimizer, create_reader):
       with tf.device('/gpu:{}'.format(i)):
         with tf.name_scope('t_{}'.format(i)) as scope:
           model = create_model()
-          #loss, top1_acc = _tower_loss(images, labels, model,
           loss, top1_acc = _tower_loss(images_splits[i], labels_splits[i], model,
                              is_train=True, scope=scope)
-          tf.get_variable_scope().reuse_variables()
-          # keep summaries only from the one tower
+          # keep summaries only from one of the towers
           summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
           grads = opt.compute_gradients(loss)
           tower_grads.append(grads)
+          # why it does not work like this??
+          assert(FLAGS.num_gpus == 1)
+          #tf.get_variable_scope().reuse_variables()
 
           for grad, var in grads:
             if grad is not None:
@@ -155,7 +156,7 @@ def _average_gradients(tower_grads):
       grads.append(expanded_g)
 
     # Average over the 'tower' dimension.
-    grad = tf.concat(0, grads)
+    grad = tf.concat(axis=0, values=grads)
     grad = tf.reduce_mean(grad, 0)
 
     # Keep in mind that the Variables are redundant because they are shared

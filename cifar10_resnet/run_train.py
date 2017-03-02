@@ -1,8 +1,8 @@
 import tensorflow as tf
 
-import fastcnn.classifier.trainer as trainer
+import classifier.trainer as trainer
 from model import Cifar10Resnet18
-from reader import Cifar10Reader
+from dataset.cifar10_reader import Cifar10Reader
 
 
 FLAGS = tf.app.flags.FLAGS
@@ -14,13 +14,24 @@ def main(argv=None):  # pylint: disable=unused-argument
   tf.gfile.MakeDirs(FLAGS.train_dir) 
 
   def create_reader():
+    def random_simple_preprocessor(image):
+      with tf.name_scope('random_simple_preprocess'):
+        image = (image - Cifar10Reader.MEAN) / Cifar10Reader.STD
+        image = tf.image.random_flip_left_right(image)
+        image = tf.image.resize_image_with_crop_or_pad(image,
+                  Cifar10Reader.WIDTH + 2 * 4, Cifar10Reader.HEIGHT + 2 * 4)
+        image = tf.random_crop(image, [Cifar10Reader.WIDTH, Cifar10Reader.HEIGHT, 3])
+      return image
+
     return Cifar10Reader(data_dir=FLAGS.data_dir,
-            batch_size=FLAGS.batch_size,
-            part=Cifar10Reader.DatasetPart.train,
-            preprocessing=Cifar10Reader.Preprocessing.random_simple)
+                         batch_size=FLAGS.batch_size,
+                         part=Cifar10Reader.DatasetPart.train,
+                         processor=random_simple_preprocessor)
+
 
   def create_model():
     return Cifar10Resnet18()
+
 
   def create_optimizer():
     class OptimizerType(object):
@@ -37,9 +48,9 @@ def main(argv=None):  # pylint: disable=unused-argument
     lr = tf.train.piecewise_constant(global_step, boundaries, values)
 
     if FLAGS.optimizer == OptimizerType.sgd_momentum:
-        opt = tf.train.MomentumOptimizer(lr, momentum=0.9)
+        opt = tf.train.MomentumOptimizer(learning_rate=lr, momentum=0.9)
     elif FLAGS.optimizer == OptimizerType.adam:
-        opt = tf.train.AdamOptimizer(lr)
+        opt = tf.train.AdamOptimizer(learning_rate=lr)
     else:
         raise Exception('Unknown optimizer type {}'.format(FLAGS.optimizer))
 

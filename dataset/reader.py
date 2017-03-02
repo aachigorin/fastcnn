@@ -4,5 +4,5 @@ class BaseReader(object):
   __metaclass__ = ABCMeta
 
   @abstractmethod
-  def get_batch():
+  def get_batch(self):
     pass
