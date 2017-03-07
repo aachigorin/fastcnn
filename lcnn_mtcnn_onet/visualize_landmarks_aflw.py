@@ -6,11 +6,11 @@ import numpy as np
 import tensorflow as tf
 
 from model import MtcnnOnet
-from dataset.celeba_reader import CelebaReader
+from dataset.aflw_reader import AFLWReader
 
 FLAGS = tf.app.flags.FLAGS
 
-tf.app.flags.DEFINE_string('train_dir', '/tmp/cifar10_train',
+tf.app.flags.DEFINE_string('train_dir', '/tmp',
                            """Directory where to write event logs """
                            """and checkpoint.""")
 tf.app.flags.DEFINE_integer('num_examples', '1',
@@ -30,10 +30,9 @@ def main(argv=None):  # pylint: disable=unused-argument
         image = tf.images.random_crop(image, [48, 48, 3])
       return image
 
-    return CelebaReader(data_dir=FLAGS.celeba_data_dir,
+    return AFLWReader(data_dir=FLAGS.aflw_data_dir,
                         batch_size=1,
-                        part=CelebaReader.DatasetPart.test,
-                        #part=CelebaReader.DatasetPart.train,
+                        part=AFLWReader.DatasetPart.test,
                         processor=simple_preprocessor)
 
   def model():
@@ -41,7 +40,7 @@ def main(argv=None):  # pylint: disable=unused-argument
 
   with tf.name_scope('tester_reader') as scope:
     reader = reader()
-    images, labels = reader.get_batch()
+    images = reader.get_batch()
     reader_summaries = tf.summary.merge(
       tf.get_collection(tf.GraphKeys.SUMMARIES, scope))
 
@@ -65,13 +64,11 @@ def main(argv=None):  # pylint: disable=unused-argument
     saver.restore(sess, ckpt.model_checkpoint_path)
 
     for i in xrange(FLAGS.num_examples):
-      img_val, labels_val, predictions_val = sess.run([images, labels, predictions])
+      img_val, predictions_val = sess.run([images, predictions])
       img_val = np.squeeze(img_val)
       radius = 2
-      img_to_save = _draw_points(img_val, labels_val, color=[0, 1, 0], radius=radius,
+      img_to_save = _draw_points(img_val, predictions_val, color=[1, 1, 1], radius=radius,
                                  method=skimage.draw.circle)
-      img_to_save = _draw_points(img_to_save, predictions_val, color=[0, 0, 1], radius=radius,
-                                 method=skimage.draw.circle_perimeter)
       scipy.misc.imsave(os.path.join(FLAGS.save_to, '{}_img_orig.jpg'.format(i)), img_val)
       scipy.misc.imsave(os.path.join(FLAGS.save_to, '{}_img.jpg'.format(i)), img_to_save)
 

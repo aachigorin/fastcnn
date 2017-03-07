@@ -35,7 +35,7 @@ tf.app.flags.DEFINE_float('gpu_memory_ratio', 0.8,
 
 tf.app.flags.DEFINE_integer('batch_size', 128,
                             """Number of images to process in a batch.""")
-tf.app.flags.DEFINE_integer('max_steps', 70000,
+tf.app.flags.DEFINE_integer('max_steps', 100000,
                             """Number of batches to run.""")
 tf.app.flags.DEFINE_string('optimizer', 'sgd_momentum',
                            """Optimizer of choice""")
@@ -45,10 +45,11 @@ tf.app.flags.DEFINE_string('lr_schedule', '0:0.1,32000:0.01,48000:0.001',
 
 def train(create_model, create_optimizer, create_reader):
   with tf.get_default_graph().name_scope('train'):
-    with tf.name_scope('trainer_reader') as scope:
-      reader = create_reader()
-      images, labels = reader.get_batch()
-      reader_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope) 
+    with tf.device('/cpu:0'):
+      with tf.name_scope('trainer_reader') as scope:
+        reader = create_reader()
+        images, labels = reader.get_batch()
+        reader_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
 
     images_splits = tf.split(images, axis=0, num_or_size_splits=FLAGS.num_gpus)
     labels_splits = tf.split(labels, axis=0, num_or_size_splits=FLAGS.num_gpus)
@@ -63,11 +64,11 @@ def train(create_model, create_optimizer, create_reader):
       with tf.device('/gpu:{}'.format(i)):
         with tf.name_scope('t_{}'.format(i)) as scope:
           model = create_model()
-          loss, top1_acc = _tower_loss(images_splits[i], labels_splits[i], model,
+          total_loss, all_losses = _tower_loss(images_splits[i], labels_splits[i], model,
                              is_train=True, scope=scope)
           # keep summaries only from one of the towers
           summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
-          grads = opt.compute_gradients(loss)
+          grads = opt.compute_gradients(total_loss)
           tower_grads.append(grads)
           # why it does not work like this??
           assert(FLAGS.num_gpus == 1)
@@ -84,12 +85,14 @@ def train(create_model, create_optimizer, create_reader):
 
     # creating a session
     config = tf.ConfigProto()
-    config.gpu_options.per_process_gpu_memory_fraction=FLAGS.gpu_memory_ratio
-    config.gpu_options.visible_device_list=FLAGS.gpus
-    config.allow_soft_placement=True
-    config.gpu_options.allow_growth=True
-    config.log_device_placement=FLAGS.log_device_placement
+    config.gpu_options.per_process_gpu_memory_fraction = FLAGS.gpu_memory_ratio
+    config.gpu_options.visible_device_list = FLAGS.gpus
+    config.allow_soft_placement = True
+    config.gpu_options.allow_growth = True
+    config.log_device_placement = FLAGS.log_device_placement
     sess = tf.Session(config=config)
+
+    reader.init(sess)
     sess.run(tf.global_variables_initializer())
 
     # start the queue runners
@@ -101,7 +104,7 @@ def train(create_model, create_optimizer, create_reader):
 
     for step in xrange(FLAGS.max_steps):
       start_time = time.time()
-      _, loss_val, top1_acc_val = sess.run([train_op, loss, top1_acc])
+      _, loss_val, all_losses_val = sess.run([train_op, total_loss, all_losses])
       #assert not np.isnan(loss_val), 'Model diverged with loss = NaN'
 
       if step % FLAGS.loss_output_freq == 0:
@@ -110,9 +113,9 @@ def train(create_model, create_optimizer, create_reader):
         examples_per_sec = num_examples_per_step / duration
         sec_per_batch = duration / FLAGS.num_gpus
 
-        format_str = ('step %d, loss = %.2f, top1_ac = %.2f (%.1f examples/sec; %.3f '
+        format_str = ('step %d, total_loss = %.7f, all_losses = %s (%.1f examples/sec; %.3f '
                       'sec/batch)')
-        print(format_str % (step, loss_val, top1_acc_val,
+        print(format_str % (step, loss_val, all_losses_val,
                              examples_per_sec, sec_per_batch))
 
       if step % FLAGS.summary_write_freq == 0:
@@ -127,9 +130,9 @@ def train(create_model, create_optimizer, create_reader):
     coord.join(threads, stop_grace_period_secs=10)
 
 
-def _tower_loss(images, labels, model, is_train, scope):
-  logits = model.inference(images, is_train=is_train)
-  _, top1_acc = model.loss(logits, labels)
+def _tower_loss(images, gt_labels, model, is_train, scope):
+  predictions = model.inference(images, is_train=is_train)
+  all_losses = model.loss(gt_labels, predictions)
   losses = tf.get_collection('losses', scope)
   total_loss = tf.add_n(losses, name='total_loss')
   for l in losses:
@@ -138,9 +141,9 @@ def _tower_loss(images, labels, model, is_train, scope):
 
   update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
   updates = tf.group(*update_ops) # for correct batch norm execution
-  with tf.control_dependencies([updates, top1_acc]):
+  with tf.control_dependencies([updates]):
     total_loss = tf.identity(total_loss)
-  return total_loss, top1_acc
+  return total_loss, all_losses
 
 
 def _average_gradients(tower_grads):
@@ -150,7 +153,7 @@ def _average_gradients(tower_grads):
     #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
     grads = []
     for g, var in grad_and_vars:
-      # Add 0 dimension to the gradients to represent the tower.
+      # Add 0 dimension to the gradients to represent the tower
       expanded_g = tf.expand_dims(g, 0)
       # Append on a 'tower' dimension which we will average over below.
       grads.append(expanded_g)

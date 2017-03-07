@@ -10,5 +10,5 @@ class BaseModel(object):
 
 
   @abstractmethod
-  def loss(self, logits, labels):
+  def loss(self, gt, labels):
     pass

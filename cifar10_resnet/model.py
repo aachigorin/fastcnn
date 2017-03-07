@@ -65,7 +65,7 @@ class Cifar10Resnet18(BaseModel):
       tf.summary.scalar(scope + 'top1_accuracy', top1_acc)
       tf.summary.scalar(scope + 'total_loss', total_loss)
 
-      return total_loss, top1_acc
+      return total_loss
 
 
 # utility functions

@@ -10,7 +10,10 @@ from classifier.model import BaseModel
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_float('weight_decay', 0.0001,
                           'Global weight decay')
-
+tf.app.flags.DEFINE_float('batch_norm_decay', 0.9,
+                          'Global weight decay')
+tf.app.flags.DEFINE_integer('num_base_filters', 32,
+                          'Base for the filters (multiplied by coeff afterwards)')
 
 # model class
 class MtcnnOnet(BaseModel):
@@ -18,24 +21,41 @@ class MtcnnOnet(BaseModel):
     with tf.name_scope('model'):
       in_shape = images.get_shape().as_list()
 
-      h = _conv2d(images, k_h=3, k_w=3, n_ch=32, s_h=2, s_w=2,
-                  is_train=is_train, scope='conv_0', padding='VALID')
+      n_f = FLAGS.num_base_filters
+      h = _conv2d(images, k_h=3, k_w=3, n_ch=n_f, s_h=1, s_w=1,
+                  is_train=is_train, scope='conv0', padding='SAME')
+      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
+                                       trainable=True, is_training=is_train, reuse=False, scope='bn1')
+      h = tf.nn.max_pool(h, ksize=[1,3,3,1], strides=[1,2,2,1], padding='VALID',
+                         name='pool1')
       h = tf.nn.relu(h)
 
-      h = _conv2d(h, k_h=3, k_w=3, n_ch=64, s_h=2, s_w=2,
-                  is_train=is_train, scope='conv_1', padding='VALID')
+      h = _conv2d(h, k_h=3, k_w=3, n_ch=n_f*2, s_h=1, s_w=1,
+                  is_train=is_train, scope='conv2', padding='SAME')
+      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
+                                       trainable=True, is_training=is_train, reuse=False, scope='bn2')
+      h = tf.nn.max_pool(h, ksize=[1,3,3,1], strides=[1,2,2,1], padding='VALID',
+                         name='pool3')
       h = tf.nn.relu(h)
 
-      h = _conv2d(h, k_h=3, k_w=3, n_ch=64, s_h=2, s_w=2,
-                  is_train=is_train, scope='conv_2', padding='VALID')
+      h = _conv2d(h, k_h=3, k_w=3, n_ch=n_f*2, s_h=1, s_w=1,
+                  is_train=is_train, scope='conv4', padding='SAME')
+      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
+                                       trainable=True, is_training=is_train, reuse=False, scope='bn3')
+      h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding='VALID',
+                         name='pool5')
       h = tf.nn.relu(h)
 
-      h = _conv2d(h, k_h=3, k_w=3, n_ch=128, s_h=2, s_w=2,
-                  is_train=is_train, scope='conv_3', padding='VALID')
+      h = _conv2d(h, k_h=3, k_w=3, n_ch=n_f*4, s_h=1, s_w=1,
+                  is_train=is_train, scope='conv6', padding='VALID')
+      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
+                                       trainable=True, is_training=is_train, reuse=False, scope='bn4')
       h = tf.nn.relu(h)
 
-      h = _conv2d(h, k_h=1, k_w=1, n_ch=256, s_h=1, s_w=1,
-                  is_train=is_train, scope='conv_4', padding='VALID')
+      h = _conv2d(h, k_h=1, k_w=1, n_ch=n_f*8, s_h=1, s_w=1,
+                  is_train=is_train, scope='conv7', padding='VALID')
+      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
+                                       trainable=True, is_training=is_train, reuse=False, scope='bn5')
       h = tf.nn.relu(h)
 
       h = global_avg_pool(h, scope='global_pool')
@@ -53,7 +73,7 @@ class MtcnnOnet(BaseModel):
       total_loss = tf.add_n(tf.get_collection('losses'), name='total_loss')
       #tf.summary.scalar(scope + 'landmarks_loss', ssd_loss)
       tf.summary.scalar(scope + 'total_loss', total_loss)
-      return total_loss
+      return [total_loss, ssd_loss]
 
 
 # utility functions

@@ -10,7 +10,10 @@ FLAGS = tf.app.flags.FLAGS
 
 def main(argv=None):  # pylint: disable=unused-argument
   if tf.gfile.Exists(FLAGS.train_dir):
-    tf.gfile.DeleteRecursively(FLAGS.train_dir)
+    try:
+      tf.gfile.DeleteRecursively(FLAGS.train_dir)
+    except:
+      pass
   tf.gfile.MakeDirs(FLAGS.train_dir)
 
   def create_reader():

@@ -10,7 +10,7 @@ from dataset.celeba_reader import CelebaReader
 
 FLAGS = tf.app.flags.FLAGS
 
-tf.app.flags.DEFINE_string('train_dir', '/tmp/cifar10_train',
+tf.app.flags.DEFINE_string('train_dir', '/tmp/',
                            """Directory where to write event logs """
                            """and checkpoint.""")
 tf.app.flags.DEFINE_integer('num_examples', '1',
@@ -33,7 +33,6 @@ def main(argv=None):  # pylint: disable=unused-argument
     return CelebaReader(data_dir=FLAGS.celeba_data_dir,
                         batch_size=1,
                         part=CelebaReader.DatasetPart.test,
-                        #part=CelebaReader.DatasetPart.train,
                         processor=simple_preprocessor)
 
   def model():

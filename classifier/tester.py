@@ -1,6 +1,8 @@
 import os
 import time
 
+import numpy as np
+
 import tensorflow as tf
 
 __all__ = ["test"]
@@ -26,64 +28,64 @@ tf.app.flags.DEFINE_string('gpus', '0',
 
 
 def test(model, reader):
-  with tf.name_scope('tester_reader') as scope:
-    reader = reader()
-    images, labels = reader.get_batch()
-    reader_summaries = tf.summary.merge(
-      tf.get_collection(tf.GraphKeys.SUMMARIES, scope))
+    with tf.name_scope('tester_reader') as scope:
+      with tf.device('/cpu:0'):
+        reader = reader()
+        images, labels = reader.get_batch()
+        reader_summaries = tf.summary.merge(
+          tf.get_collection(tf.GraphKeys.SUMMARIES, scope))
 
-  model = model()
-  logits = model.inference(images, is_train=False)
-  total_loss, top1 = model.loss(logits, labels)
+    model = model()
+    logits = model.inference(images, is_train=False)
+    all_losses = model.loss(logits, labels)
 
-  saver = tf.train.Saver()
-  summary_writer = tf.summary.FileWriter(FLAGS.train_dir,
-                            tf.get_default_graph())
+    saver = tf.train.Saver()
+    summary_writer = tf.summary.FileWriter(FLAGS.train_dir,
+                              tf.get_default_graph())
 
-  while True:
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth=True
-    config.gpu_options.visible_device_list=FLAGS.gpus
+    while True:
+      config = tf.ConfigProto()
+      config.gpu_options.allow_growth = True
+      config.gpu_options.visible_device_list = FLAGS.gpus
+      sess = tf.Session(config=config)
 
-    with tf.Session(config=config) as sess:
-      sess.run(tf.global_variables_initializer())
-      coord = tf.train.Coordinator()
-      threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+      with tf.Session(config=config) as sess:
+        reader.init(sess)
 
-      ckpt = tf.train.get_checkpoint_state(os.path.abspath(FLAGS.train_dir))
-      global_step = _get_global_step(ckpt)
-      if global_step == None:
-        time.sleep(FLAGS.eval_interval_secs)
-        continue
-      saver.restore(sess, ckpt.model_checkpoint_path)
+        sess.run(tf.global_variables_initializer())
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-      num_iters = FLAGS.num_examples // FLAGS.batch_size
-      count_loss = 0.
-      count_top1 = 0.
-      for i in xrange(num_iters):
-        loss_val, top1_val, reader_summaries_str = sess.run(
-          [total_loss, top1, reader_summaries])
-        count_loss += loss_val
-        count_top1 += top1_val
-      avg_total_loss = count_loss / num_iters
-      avg_top1_acc = count_top1 / num_iters
+        ckpt = tf.train.get_checkpoint_state(os.path.abspath(FLAGS.train_dir))
+        global_step = _get_global_step(ckpt)
+        if global_step == None:
+          time.sleep(FLAGS.eval_interval_secs)
+          continue
+        saver.restore(sess, ckpt.model_checkpoint_path)
 
-      coord.request_stop()
-      coord.join(threads, stop_grace_period_secs=10)
+        num_iters = FLAGS.num_examples // FLAGS.batch_size
+        sum_all_losses = np.zeros((len(all_losses)))
+        #count_top1 = 0.
+        for i in xrange(num_iters):
+          all_losses_val, reader_summaries_str = sess.run([all_losses, reader_summaries])
+          sum_all_losses += all_losses_val
+        avg_all_losses = sum_all_losses / num_iters
 
-      # adding summaries
-      summary_writer.add_summary(reader_summaries_str, global_step)
+        coord.request_stop()
+        coord.join(threads, stop_grace_period_secs=10)
 
-      summary = tf.Summary()
-      summary.value.add(tag='tester/avg_total_loss', simple_value=avg_total_loss)
-      summary.value.add(tag='tester/avg_top1_accuracy', simple_value=avg_top1_acc)
-      summary_writer.add_summary(summary, global_step)
+        # adding summaries
+        summary_writer.add_summary(reader_summaries_str, global_step)
 
-    print('{} results. total_loss = {}, avg_top1_accuracy = {}'.format(
-          FLAGS.dataset_part, avg_total_loss, avg_top1_acc))
-    if FLAGS.run_once:
-      break
-    time.sleep(FLAGS.eval_interval_secs)
+        summary = tf.Summary()
+        for i in xrange(len(avg_all_losses)):
+          summary.value.add(tag='tester/avg_loss_{}'.format(i), simple_value=avg_all_losses[i])
+          summary_writer.add_summary(summary, global_step)
+
+      print('{} results. all_losses = {}'.format(FLAGS.dataset_part, avg_all_losses))
+      if FLAGS.run_once:
+        break
+      time.sleep(FLAGS.eval_interval_secs)
 
 
 def _get_global_step(ckpt):
