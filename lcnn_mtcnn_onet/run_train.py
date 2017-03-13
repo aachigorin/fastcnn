@@ -2,7 +2,7 @@ import tensorflow as tf
 
 import classifier.trainer as trainer
 from model import MtcnnOnet
-from dataset.celeba_reader import CelebaReader
+from dataset.celeba_widerface_reader import CelebaWiderfaceReader
 
 
 FLAGS = tf.app.flags.FLAGS
@@ -17,19 +17,8 @@ def main(argv=None):  # pylint: disable=unused-argument
   tf.gfile.MakeDirs(FLAGS.train_dir)
 
   def create_reader():
-    def random_simple_preprocessor(image):
-      with tf.name_scope('random_simple_preprocess'):
-        image = image - 0.5
-        #image = tf.image.random_flip_left_right(image)
-        #image = tf.image.resize_image_with_crop_or_pad(image,
-        #          Cifar10Reader.WIDTH + 2 * 4, Cifar10Reader.HEIGHT + 2 * 4)
-        image = tf.random_crop(image, [48, 48, 3])
-      return image
-
-    return CelebaReader(data_dir=FLAGS.celeba_data_dir,
-                        batch_size=FLAGS.batch_size,
-                        part=CelebaReader.DatasetPart.train,
-                        processor=random_simple_preprocessor)
+    return CelebaWiderfaceReader(batch_size=FLAGS.batch_size,
+                                 part=CelebaWiderfaceReader.DatasetPart.train)
 
 
   def create_model():

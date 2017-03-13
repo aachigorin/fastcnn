@@ -26,8 +26,8 @@ def main(argv=None):  # pylint: disable=unused-argument
     def simple_preprocessor(image):
       with tf.name_scope('random_simple_preprocess'):
         image = image - 0.5
-        # TODO: change it
-        image = tf.images.random_crop(image, [48, 48, 3])
+        image = tf.image.central_crop(image, 0.88)  # 54 -> 48
+        image = tf.reshape(image, [48, 48, 3])
       return image
 
     return CelebaReader(data_dir=FLAGS.celeba_data_dir,

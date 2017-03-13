@@ -26,8 +26,7 @@ def main(argv=None):  # pylint: disable=unused-argument
     def simple_preprocessor(image):
       with tf.name_scope('random_simple_preprocess'):
         image = image - 0.5
-        # TODO: change it
-        image = tf.images.random_crop(image, [48, 48, 3])
+        image = tf.image.resize_images(image, size=[48, 48])
       return image
 
     return AFLWReader(data_dir=FLAGS.aflw_data_dir,

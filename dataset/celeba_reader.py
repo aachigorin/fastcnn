@@ -16,7 +16,7 @@ from dataset.reader import BaseReader
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_string('celeba_data_dir', '/media/p.omenitsch/code/facedet/MTCNN_train/ONetOut/',
                            """Path to the Celeba data, preprocessed by Phillip""")
-tf.app.flags.DEFINE_integer('max_num_parts', '20',
+tf.app.flags.DEFINE_integer('celeba_max_num_parts', '20',
                         """Maximum number of parts from the dataset to take""")
 
 
@@ -28,7 +28,7 @@ class CelebaReader(BaseReader):
 
 
   def __init__(self, data_dir, batch_size, part, processor=None):
-    print('Started loading dataset')
+    print('Started loading dataset Celeba')
     self.batch_size = batch_size
     self.processor = processor
     self.part = part
@@ -36,19 +36,23 @@ class CelebaReader(BaseReader):
     self.min_queue_examples = 10 * batch_size
 
     if self.part == CelebaReader.DatasetPart.train:
-      name_pattern = 'celebagt2data_x[0-9]*.mat'
+      name_pattern = 'celebagt3data_x[0-9]*.mat'
+      files = sorted(glob.glob(os.path.join(data_dir, name_pattern)))
+      files = [files[0]] + files[2:9]
     elif self.part == CelebaReader.DatasetPart.test:
-      name_pattern = 'celebagt2data_[0-9]*.mat'
+      name_pattern = 'celebagt3data_x[0-9]*.mat'
+      files = sorted(glob.glob(os.path.join(data_dir, name_pattern)))
+      files = [files[9], files[1]]
     else:
       raise Exception("Unsupported dataset part {}".format(part))
 
     # TODO: can move the loading part into init method and derive just shapes and lenght here
-    self.points = []
+    self.labels = []
     self.imgs = []
-    for file_idx, fpath in enumerate(glob.glob(os.path.join(data_dir, name_pattern))):
-      print('Loading dataset part #{}. File {}'.format(file_idx, fpath))
-      if file_idx >= FLAGS.max_num_parts:
+    for file_idx, fpath in enumerate(files):
+      if file_idx >= FLAGS.celeba_max_num_parts:
         break
+      print('Loading dataset part #{}. File {}'.format(file_idx, fpath))
 
       mat = scipy.io.loadmat(fpath)
       points = mat['pointss']
@@ -61,45 +65,59 @@ class CelebaReader(BaseReader):
       points = points[faces_to_take, :]
       imgs = np.transpose(imgs[:, :, :, faces_to_take], (3, 0, 1, 2))
 
-      self.points.append(points)
+      # adding 6 zeros for
+      # 1 - cost type (0 - not face, 1 - face, 2 - partface, 3 - landmarks)
+      # 1 - face / not face
+      # 4 - bbox regression
+      labels = np.concatenate((np.zeros((points.shape[0], 6)), points), axis=1)
+      labels[0, :] = 3 # landmarks sign
+
+      print('labels', labels.shape)
+      print('imgs', imgs.shape)
+      self.labels.append(labels)
       self.imgs.append(imgs)
     print('Finished loading dataset')
 
 
   def get_batch(self):
-    print('Number of parts for tf.train.batch_join = {}'.format(len(self.points)))
+    print('Number of parts for tf.train.batch_join = {}'.format(len(self.labels)))
     n_samples = 0
-    for idx, p in enumerate(self.points):
+    for idx, p in enumerate(self.labels):
       n_rows = int(p.shape[0])
       n_samples += int(n_rows)
       print('Number of samples in the part #{} = {}'.format(idx, n_rows))
     print('Total number of samples = {}'.format(n_samples))
 
-    parts = []
+    self.parts = []
     self.imgs_placeholder = []
     self.labels_placeholder = []
     self.tf_imgs = []
     self.tf_labels = []
     for i in xrange(len(self.imgs)):
       self.imgs_placeholder.append(tf.placeholder(dtype=tf.float32, shape=self.imgs[i].shape))
-      self.labels_placeholder.append(tf.placeholder(dtype=tf.float32, shape=self.points[i].shape))
+      self.labels_placeholder.append(tf.placeholder(dtype=tf.float32, shape=self.labels[i].shape))
       self.tf_imgs.append(tf.Variable(self.imgs_placeholder[i], trainable=False, collections=[]))
       self.tf_labels.append(tf.Variable(self.labels_placeholder[i], trainable=False, collections=[]))
-
-      #if self.processor is not None:
-      #  tf_imgs = self.processor(tf_imgs)
 
       tf_imgs, tf_labels = \
         tf.train.slice_input_producer([self.tf_imgs[i], self.tf_labels[i]],
                                       shuffle=True if self.part == CelebaReader.DatasetPart.train else False,
                                       capacity=self.batch_size * 5)
-      parts.append((tf_imgs, tf_labels))
 
-    print('Number of parts in celeba {}'.format(len(parts)))
+      if self.processor is not None:
+        tf_imgs = self.processor(tf_imgs)
+
+      self.parts.append((tf_imgs, tf_labels))
+
+    print('Number of parts in celeba {}'.format(len(self.parts)))
     return tf.train.batch_join(
-          parts,
+          self.parts,
           batch_size=self.batch_size,
           capacity=self.min_queue_examples + 5 * self.batch_size)
+
+
+  def get_parts(self):
+    return self.parts
 
 
   def init(self, sess):
@@ -108,8 +126,9 @@ class CelebaReader(BaseReader):
       sess.run(self.tf_imgs[i].initializer,
                feed_dict={self.imgs_placeholder[i]: self.imgs[i]})
       sess.run(self.tf_labels[i].initializer,
-               feed_dict={self.labels_placeholder[i]: self.points[i]})
+               feed_dict={self.labels_placeholder[i]: self.labels[i]})
     print('Finished initializing the data')
+
 
 if __name__ == '__main__':
   reader = CelebaReader(FLAGS.celeba_data_dir, processor=None, batch_size=10,

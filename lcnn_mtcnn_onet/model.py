@@ -59,21 +59,52 @@ class MtcnnOnet(BaseModel):
       h = tf.nn.relu(h)
 
       h = global_avg_pool(h, scope='global_pool')
-      h = _conv2d(h, k_h=1, k_w=1, n_ch=10, s_h=1, s_w=1,
-                  is_train=is_train, scope='fc')
-      h = tf.squeeze(h, axis=[1, 2])
-      return h
+      h1 = tf.squeeze(_conv2d(h, k_h=1, k_w=1, n_ch=2, s_h=1, s_w=1,
+                  is_train=is_train, scope='conv_face'), axis=[1,2])
+      h2 = tf.squeeze(_conv2d(h, k_h=1, k_w=1, n_ch=4, s_h=1, s_w=1,
+                   is_train=is_train, scope='conv_bbox'), axis=[1,2])
+      h3 = tf.squeeze(_conv2d(h, k_h=1, k_w=1, n_ch=10, s_h=1, s_w=1,
+                   is_train=is_train, scope='conv_landmarks'), axis=[1,2])
+      return h1, h2, h3
 
 
-  def loss(self, gt_labels, labels):
+  def loss(self, gt_labels, preds):
     with tf.name_scope('loss') as scope:
-      #ssd_loss = tf.reduce_mean(tf.nn.l2_loss(gt_labels - labels), name='landmarks_loss')
-      ssd_loss = tf.reduce_mean(tf.square(gt_labels - labels), name='landmarks_loss')
-      tf.add_to_collection('losses', ssd_loss)
+      preds_face = preds[0]
+      preds_bbox = preds[1]
+      preds_landmarks = preds[2]
+
+      gt_type = tf.cast(gt_labels[:, 1], dtype=tf.int32)
+      gt_face = tf.cast(gt_labels[:, 1], dtype=tf.int32)
+      gt_bbox = gt_labels[:, 2:6]
+      gt_landmarks = gt_labels[:, 6:16]
+
+      def f1(): return tf.constant(10)
+      def f2(): return tf.constant(0)
+      def f3(): return tf.constant(-1)
+
+      #print(gt_labels.get_shape())
+      #print(tf.shape(gt_labels))
+
+      for i in xrange(gt_labels.get_shape()[0]):
+        r = tf.case({tf.equal(gt_type[i], tf.constant(0, dtype=tf.int32)): f1,
+                     tf.equal(gt_type[i], tf.constant(1, dtype=tf.int32)): f2},
+                     default=f3, exclusive=True)
+      # ce_loss_face = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(
+      #                               labels=gt_face, logits=preds_face),
+      #                               name='cross_entropy')
+      # ssd_loss_bbox = tf.reduce_mean(tf.square(gt_bbox - preds_bbox),
+      #                                name='bbox_loss')
+      # ssd_loss_landmarks = tf.reduce_mean(tf.square(gt_landmarks - preds_landmarks),
+      #                                       name='landmarks_loss')
+
+      tf.add_to_collection('losses', ce_loss_face)
+      tf.add_to_collection('losses', ssd_loss_bbox)
+      tf.add_to_collection('losses', ssd_loss_landmarks)
+
       total_loss = tf.add_n(tf.get_collection('losses'), name='total_loss')
-      #tf.summary.scalar(scope + 'landmarks_loss', ssd_loss)
       tf.summary.scalar(scope + 'total_loss', total_loss)
-      return [total_loss, ssd_loss]
+      return [total_loss, ce_loss_face, ssd_loss_bbox, ssd_loss_landmarks]
 
 
 # utility functions
