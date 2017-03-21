@@ -26,8 +26,10 @@ def main(argv=None):  # pylint: disable=unused-argument
     def simple_preprocessor(image):
       with tf.name_scope('random_simple_preprocess'):
         image = image - 0.5
-        image = tf.image.central_crop(image, 0.88)  # 54 -> 48
-        image = tf.reshape(image, [48, 48, 3])
+        # TODO: to use crop we should also correct landmarks coordinates
+        #image = tf.image.central_crop(image, 0.88)  # 54 -> 48
+        #image = tf.reshape(image, [48, 48, 3])
+        image = tf.image.resize_images(image, [48, 48])
       return image
 
     return CelebaReader(data_dir=FLAGS.celeba_data_dir,
@@ -65,6 +67,8 @@ def main(argv=None):  # pylint: disable=unused-argument
 
     for i in xrange(FLAGS.num_examples):
       img_val, labels_val, predictions_val = sess.run([images, labels, predictions])
+      labels_val = labels_val[:, 6:]
+      predictions_val = predictions_val[2] # predictions for landmarks
       img_val = np.squeeze(img_val)
       radius = 2
       img_to_save = _draw_points(img_val, labels_val, color=[0, 1, 0], radius=radius,

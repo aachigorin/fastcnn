@@ -43,6 +43,7 @@ class CelebaReader(BaseReader):
       name_pattern = 'celebagt3data_x[0-9]*.mat'
       files = sorted(glob.glob(os.path.join(data_dir, name_pattern)))
       files = [files[9], files[1]]
+      print(files)
     else:
       raise Exception("Unsupported dataset part {}".format(part))
 
@@ -70,7 +71,7 @@ class CelebaReader(BaseReader):
       # 1 - face / not face
       # 4 - bbox regression
       labels = np.concatenate((np.zeros((points.shape[0], 6)), points), axis=1)
-      labels[0, :] = 3 # landmarks sign
+      labels[:, 0] = 3 # landmarks sign
 
       print('labels', labels.shape)
       print('imgs', imgs.shape)

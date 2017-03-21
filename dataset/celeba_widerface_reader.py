@@ -27,8 +27,9 @@ class CelebaWiderfaceReader(BaseReader):
     def preprocessor_celeba(image):
       with tf.name_scope('preprocessor_celeba'):
         image = image - 0.5
-        image = tf.image.central_crop(image, 0.88) # 54 -> 48
-        image = tf.reshape(image, [48, 48, 3])
+        #image = tf.image.central_crop(image, 0.88) # 54 -> 48
+        #image = tf.reshape(image, [48, 48, 3])
+        image = tf.image.resize_images(image, [48, 48])
       return image
 
     def preprocessor_widerface(image):
@@ -48,10 +49,22 @@ class CelebaWiderfaceReader(BaseReader):
     self.widerface.get_batch()
     parts_faces, parts_partfaces, parts_not_faces = self.widerface.get_parts()
     parts_landmarks = self.celeba.get_parts()
-    parts = parts_faces + parts_partfaces + parts_not_faces + parts_landmarks
-    #parts = self.celeba.get_parts()
-    return tf.train.batch_join(parts, batch_size=self.batch_size,
-                               capacity=self.min_queue_examples + 5 * self.batch_size)
+
+    assert(self.batch_size % 4 == 0)
+    bs = self.batch_size / 4
+    faces_batch = tf.train.batch_join(parts_faces, batch_size=bs,
+                               capacity=self.min_queue_examples + 5 * bs)
+    partfaces_batch = tf.train.batch_join(parts_partfaces, batch_size=bs,
+                                 capacity=self.min_queue_examples + 5 * bs)
+    not_faces_batch = tf.train.batch_join(parts_not_faces, batch_size=bs,
+                                 capacity=self.min_queue_examples + 5 * bs)
+    landmarks_batch = tf.train.batch_join(parts_landmarks, batch_size=bs,
+                                 capacity=self.min_queue_examples + 5 * bs)
+
+    return [tf.concat([faces_batch[i], partfaces_batch[i],
+                       not_faces_batch[i], landmarks_batch[i]], axis=0) for i in range(0,2)]
+    #return tf.train.batch_join(parts, batch_size=self.batch_size,
+    #                           capacity=self.min_queue_examples + 5 * self.batch_size)
 
 
   def init(self, sess):

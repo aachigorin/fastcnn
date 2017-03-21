@@ -36,8 +36,8 @@ def test(model, reader):
           tf.get_collection(tf.GraphKeys.SUMMARIES, scope))
 
     model = model()
-    logits = model.inference(images, is_train=False)
-    all_losses = model.loss(logits, labels)
+    predictions = model.inference(images, is_train=False)
+    all_losses = model.loss(labels, predictions)
 
     saver = tf.train.Saver()
     summary_writer = tf.summary.FileWriter(FLAGS.train_dir,

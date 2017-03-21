@@ -39,18 +39,21 @@ tf.app.flags.DEFINE_integer('max_steps', 100000,
                             """Number of batches to run.""")
 tf.app.flags.DEFINE_string('optimizer', 'sgd_momentum',
                            """Optimizer of choice""")
-tf.app.flags.DEFINE_string('lr_schedule', '0:0.1,32000:0.01,48000:0.001',
+tf.app.flags.DEFINE_string('lr_schedule', '0:0.2,70000:0.02,85000:0.002',
                           """Learning rate to start with""")
 
+# variables that we want to make global for some reason
+vars = dict()
 
 def train(create_model, create_optimizer, create_reader):
-  with tf.get_default_graph().name_scope('train'):
-    with tf.device('/cpu:0'):
-      with tf.name_scope('trainer_reader') as scope:
-        reader = create_reader()
-        images, labels = reader.get_batch()
-        reader_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
+  with tf.device('/cpu:0'):
+    with tf.name_scope('trainer_reader') as scope:
+      reader = create_reader()
+      images, labels = reader.get_batch()
+      vars['labels'] = labels
+      reader_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
 
+  with tf.get_default_graph().name_scope('train'):
     images_splits = tf.split(images, axis=0, num_or_size_splits=FLAGS.num_gpus)
     labels_splits = tf.split(labels, axis=0, num_or_size_splits=FLAGS.num_gpus)
 
@@ -104,7 +107,8 @@ def train(create_model, create_optimizer, create_reader):
 
     for step in xrange(FLAGS.max_steps):
       start_time = time.time()
-      _, loss_val, all_losses_val = sess.run([train_op, total_loss, all_losses])
+      _, loss_val, all_losses_val = \
+        sess.run([train_op, total_loss, all_losses])
       #assert not np.isnan(loss_val), 'Model diverged with loss = NaN'
 
       if step % FLAGS.loss_output_freq == 0:
@@ -118,11 +122,11 @@ def train(create_model, create_optimizer, create_reader):
         print(format_str % (step, loss_val, all_losses_val,
                              examples_per_sec, sec_per_batch))
 
-      if step % FLAGS.summary_write_freq == 0:
+      if step % FLAGS.summary_write_freq == 0 and step != 0:
         summary_str = sess.run(summary_op)
         summary_writer.add_summary(summary_str, step)
 
-      if step % FLAGS.backup_freq == 0 or (step + 1) == FLAGS.max_steps:
+      if (step % FLAGS.backup_freq == 0 or (step + 1) == FLAGS.max_steps) and step != 0:
         checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
         saver.save(sess, checkpoint_path, global_step=step)
 
@@ -132,12 +136,14 @@ def train(create_model, create_optimizer, create_reader):
 
 def _tower_loss(images, gt_labels, model, is_train, scope):
   predictions = model.inference(images, is_train=is_train)
+  vars['predictions'] = predictions[3]
+
   all_losses = model.loss(gt_labels, predictions)
   losses = tf.get_collection('losses', scope)
   total_loss = tf.add_n(losses, name='total_loss')
-  for l in losses:
-    loss_name = re.sub('%tower_[0-9]*/', '', l.op.name)
-    tf.summary.scalar(loss_name, l)
+  #for l in losses:
+  #  loss_name = re.sub('%tower_[0-9]*/', '', l.op.name)
+  #  tf.summary.scalar(loss_name, l)
 
   update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
   updates = tf.group(*update_ops) # for correct batch norm execution
@@ -153,6 +159,10 @@ def _average_gradients(tower_grads):
     #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
     grads = []
     for g, var in grad_and_vars:
+      # make gradients zero for variables for which grads are not computed
+      if g is None:
+        print('Variable with grad equal to None: ', var)
+        g = tf.zeros_like(var)
       # Add 0 dimension to the gradients to represent the tower
       expanded_g = tf.expand_dims(g, 0)
       # Append on a 'tower' dimension which we will average over below.
