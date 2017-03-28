@@ -9,8 +9,7 @@ function mat_to_caffe(config_path, target_dir, target_model_name)
 	%config_path = '/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/convert_to_caffe/';
 	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-    prototxt_path = strcat(config_path, 'mtcnn_onet_5points.prototxt');
-    ONet = caffe.Net(prototxt_path, 'test');
+    ONet = caffe.Net(config_path, 'test');
 
     model_dir = [target_dir];
 
