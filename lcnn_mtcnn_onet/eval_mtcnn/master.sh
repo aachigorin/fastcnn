@@ -68,7 +68,7 @@ then
     # run on landmark set and draw graph
     CMD="CUDA_VISIBLE_DEVICES=$GPU LD_PRELOAD=/usr/lib64/libstdc++.so.6 LD_LIBRARY_PATH=/usr/local/cuda-7.5/lib64:"\
 "/media/p.omenitsch/tools/caffelib/:/media/p.omenitsch/tools/OpenBLAS/lib /media/p.omenitsch/matgpu -r "\
-"\"demo1('${MODEL_CONFIG_PATH}', '${PTSDB}', '${CAFFE_WEIGHTS_DIR}${MODEL_LABEL}', '${PTSTESTDB}','${PTSTESTFOLDER}',${NUMPOINTS},${POINTOUTPUTS},${EXTENSIONFACTOR}); exit; \""
+"\"demo1('${PTSDB}', '${MODEL_CONFIG_PATH}', '${CAFFE_WEIGHTS_DIR}${MODEL_LABEL}', '${PTSTESTDB}','${PTSTESTFOLDER}',${NUMPOINTS},${POINTOUTPUTS},${EXTENSIONFACTOR}); exit; \""
     pwd
     echo $CMD
     #cd /media/p.omenitsch/code/facedet/MTCNN_face_detection_alignment/code/codes/MTCNNv1
