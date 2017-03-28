@@ -31,6 +31,8 @@ tf.app.flags.DEFINE_string('gpus', '0',
                            'Available gpus')
 tf.app.flags.DEFINE_float('gpu_memory_ratio', 0.8,
                            'Ration of gpu memory to lock')
+tf.app.flags.DEFINE_integer('max_to_keep', 100,
+                            """How many backup models to keep.""")
 
 
 tf.app.flags.DEFINE_integer('batch_size', 128,
@@ -51,7 +53,7 @@ def train(create_model, create_optimizer, create_reader):
       reader = create_reader()
       images, labels = reader.get_batch()
       vars['labels'] = labels
-      reader_sum = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
+      reader_sum = tf.get_collection(reader.READER_DEBUG_COLLECTION, scope)
 
   with tf.get_default_graph().name_scope('train'):
     images_splits = tf.split(images, axis=0, num_or_size_splits=FLAGS.num_gpus)
@@ -84,7 +86,8 @@ def train(create_model, create_optimizer, create_reader):
     grads = _average_gradients(tower_grads)
     train_op = opt.apply_gradients(grads, global_step=global_step)
 
-    summary_op = tf.summary.merge(summaries + reader_sum + optimizer_sum)
+    #summary_op = tf.summary.merge(summaries + reader_sum + optimizer_sum)
+    summary_op = tf.summary.merge(summaries + reader_sum)
 
     # creating a session
     config = tf.ConfigProto()
@@ -103,7 +106,7 @@ def train(create_model, create_optimizer, create_reader):
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
     summary_writer = tf.summary.FileWriter(FLAGS.train_dir, sess.graph)
-    saver = tf.train.Saver(tf.global_variables())
+    saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.max_to_keep)
 
     for step in xrange(FLAGS.max_steps):
       start_time = time.time()

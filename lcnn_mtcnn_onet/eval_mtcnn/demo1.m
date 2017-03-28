@@ -1,4 +1,4 @@
-function demo1(ptsdb, modelpath, targetpath, testfolder, numpoints, pointoutputs, extensionfactor)
+function demo1(ptsdb, onet_config_path, modelpath, targetpath, testfolder, numpoints, pointoutputs, extensionfactor)
     %list of images
     imglist=importdata(ptsdb);
     %imglist = {};
@@ -42,9 +42,9 @@ function demo1(ptsdb, modelpath, targetpath, testfolder, numpoints, pointoutputs
     %elseif pointoutputs == 2
     %		prototxt_dir = strcat('/media/p.omenitsch/code/facedet/MTCNN_train/convert/ONetmodel','/det3568.prototxt');
     %end
-    prototxt_dir = '/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/convert_to_caffe/mtcnn_onet_5points.prototxt'
+    %prototxt_dir = '/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/eval_mtcnn/convert_to_caffe/mtcnn_onet_5points.prototxt'
     model_dir = [modelpath '.caffemodel'];
-    ONet=caffe.Net(prototxt_dir, model_dir, 'test');
+    ONet=caffe.Net(onet_config_path, model_dir, 'test');
     faces=cell(0);
     largeface = 0;
     noface = 0;

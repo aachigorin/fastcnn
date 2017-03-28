@@ -20,6 +20,8 @@ tf.app.flags.DEFINE_float('bbox_loss_coeff', 0.1,
                           'Coefficient to multiply face loss to')
 tf.app.flags.DEFINE_float('landmarks_loss_coeff', 3.,
                           'Coefficient to multiply face loss to')
+tf.app.flags.DEFINE_boolean('no_global_avg_pool', False,
+                          'Do not put global_avg_pool layer into the model')
 FLAGS = tf.app.flags.FLAGS
 
 
@@ -30,46 +32,46 @@ class MtcnnOnet(BaseModel):
       in_shape = images.get_shape().as_list()
 
       n_f = FLAGS.num_base_filters
-      h = _conv2d(images, k_h=3, k_w=3, n_ch=n_f, s_h=1, s_w=1,
+      self.conv0 = h = _conv2d(images, k_h=3, k_w=3, n_ch=n_f, s_h=1, s_w=1,
                   is_train=is_train, scope='conv0', padding='SAME')
-      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
+      self.bn1 = h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
                                        trainable=True, is_training=is_train, reuse=False, scope='bn1')
-      #h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding='VALID',
-      #                   name='pool1')
-      # for compatability with caffe: https://github.com/BVLC/caffe/blob/master/src/caffe/layers/pooling_layer.cpp#L90
-      h = tf.nn.max_pool(h, ksize=[1,3,3,1], strides=[1,2,2,1], padding='VALID',
+      h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding='VALID',
                          name='pool1')
+      # for compatability with caffe: https://github.com/BVLC/caffe/blob/master/src/caffe/layers/pooling_layer.cpp#L90
+      #h = tf.nn.max_pool(h, ksize=[1,3,3,1], strides=[1,2,2,1], padding='VALID',
+      #                   name='pool1')
       h = tf.nn.relu(h)
       print('conv0', h)
 
-      h = _conv2d(h, k_h=3, k_w=3, n_ch=n_f*2, s_h=1, s_w=1,
+      self.conv2 = h = _conv2d(h, k_h=3, k_w=3, n_ch=n_f*2, s_h=1, s_w=1,
                   is_train=is_train, scope='conv2', padding='SAME')
-      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
+      self.bn2 = h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
                                        trainable=True, is_training=is_train, reuse=False, scope='bn2')
-      #h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding='VALID',
-      #                   name='pool3')
-      h = tf.nn.max_pool(h, ksize=[1,3,3,1], strides=[1,2,2,1], padding='VALID',
+      h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding='VALID',
                          name='pool3')
+      #h = tf.nn.max_pool(h, ksize=[1,3,3,1], strides=[1,2,2,1], padding='VALID',
+      #                   name='pool3')
       h = tf.nn.relu(h)
       print('conv2', h)
 
-      h = _conv2d(h, k_h=3, k_w=3, n_ch=n_f*2, s_h=1, s_w=1,
+      self.conv4 = h = _conv2d(h, k_h=3, k_w=3, n_ch=n_f*2, s_h=1, s_w=1,
                   is_train=is_train, scope='conv4', padding='SAME')
-      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
+      self.bn3 = h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
                                        trainable=True, is_training=is_train, reuse=False, scope='bn3')
       h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding='VALID',
                          name='pool5')
       h = tf.nn.relu(h)
       print('conv4', h)
 
-      h = _conv2d(h, k_h=3, k_w=3, n_ch=n_f*4, s_h=1, s_w=1,
+      self.conv6 = h = _conv2d(h, k_h=3, k_w=3, n_ch=n_f*4, s_h=1, s_w=1,
                   is_train=is_train, scope='conv6', padding='VALID')
-      h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
+      self.bn4 = h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
                                        trainable=True, is_training=is_train, reuse=False, scope='bn4')
       h = tf.nn.relu(h)
       print('conv6', h)
 
-      h = _conv2d(h, k_h=1, k_w=1, n_ch=n_f*8, s_h=1, s_w=1,
+      self.conv7 = h = _conv2d(h, k_h=1, k_w=1, n_ch=n_f*8, s_h=1, s_w=1,
                   is_train=is_train, scope='conv7', padding='VALID')
       h = tf.contrib.layers.batch_norm(inputs=h, decay=FLAGS.batch_norm_decay,
                                        trainable=True, is_training=is_train, reuse=False, scope='bn5')
@@ -77,13 +79,28 @@ class MtcnnOnet(BaseModel):
       print('conv7', h)
 
       # try to remove this one?
-      h = global_avg_pool(h, scope='global_pool')
-      h1 = tf.squeeze(_conv2d(h, k_h=1, k_w=1, n_ch=2, s_h=1, s_w=1,
-                  is_train=is_train, scope='conv_face'), axis=[1,2])
-      h2 = tf.squeeze(_conv2d(h, k_h=1, k_w=1, n_ch=4, s_h=1, s_w=1,
-                   is_train=is_train, scope='conv_bbox'), axis=[1,2])
-      h3 = tf.squeeze(_conv2d(h, k_h=1, k_w=1, n_ch=10, s_h=1, s_w=1,
-                   is_train=is_train, scope='conv_landmarks'), axis=[1,2])
+      print('FLAGS.no_global_avg_pool', FLAGS.no_global_avg_pool)
+      if not FLAGS.no_global_avg_pool:
+        self.avg_pool = h = global_avg_pool(h, scope='global_pool')
+
+      kh, kw = int(h.get_shape()[1]), int(h.get_shape()[2])
+      print('kh, kw', kh, kw)
+      #h1 = tf.squeeze(_conv2d(h, k_h=1, k_w=1, n_ch=2, s_h=1, s_w=1,
+      #            is_train=is_train, scope='conv_face'), axis=[1,2])
+      h1 = tf.squeeze(_conv2d(h, k_h=kh, k_w=kw, n_ch=2, s_h=1, s_w=1,
+                      is_train=is_train, scope='conv_face', padding='VALID'), axis=[1,2])
+      self.face_softmax = tf.nn.softmax(h1)
+
+      #self.bbox = h2 = tf.squeeze(_conv2d(h, k_h=1, k_w=1, n_ch=4, s_h=1, s_w=1,
+      #             is_train=is_train, scope='conv_bbox'), axis=[1,2])
+      self.bbox = h2 = tf.squeeze(_conv2d(h, k_h=kh, k_w=kw, n_ch=4, s_h=1, s_w=1,
+                        is_train=is_train, scope='conv_bbox', padding='VALID'), axis=[1, 2])
+
+      #self.landmarks = h3 = tf.squeeze(_conv2d(h, k_h=1, k_w=1, n_ch=10, s_h=1, s_w=1,
+      #             is_train=is_train, scope='conv_landmarks'), axis=[1,2])
+      self.landmarks = h3 = tf.squeeze(_conv2d(h, k_h=kh, k_w=kw, n_ch=10, s_h=1, s_w=1,
+                            is_train=is_train, scope='conv_landmarks', padding='VALID'), axis=[1, 2])
+
       return h1, h2, h3, tf.nn.softmax(h1)
 
 

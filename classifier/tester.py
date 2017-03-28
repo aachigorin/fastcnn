@@ -43,11 +43,13 @@ def test(model, reader):
     summary_writer = tf.summary.FileWriter(FLAGS.train_dir,
                               tf.get_default_graph())
 
+    # creating Session only once in order to not initialize reader several times (seems to be a memory leak somewhere
+    # because of this
     while True:
       config = tf.ConfigProto()
       config.gpu_options.allow_growth = True
       config.gpu_options.visible_device_list = FLAGS.gpus
-      sess = tf.Session(config=config)
+      #sess = tf.Session(config=config)
 
       with tf.Session(config=config) as sess:
         reader.init(sess)

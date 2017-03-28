@@ -6,3 +6,5 @@ class BaseReader(object):
   @abstractmethod
   def get_batch(self):
     pass
+
+  READER_DEBUG_COLLECTION = 'reader_debug'

@@ -1,4 +1,4 @@
-function denis_demo_fddbparam(modelpath, filename,numpoints, pointoutputs, extensionfactor)
+function denis_demo_fddbparam(onet_config_path, model_dir, model_name, numpoints, pointoutputs, extensionfactor)
 %clear all;
 visible = 0;
 write = 0;
@@ -41,7 +41,7 @@ caffe.set_mode_gpu();
 
 %load caffe models
 prototxt_dir =strcat(caffe_model_path,'/det1.prototxt');
-fid = fopen([filename '.txt'], 'w');
+fid = fopen([model_name '.txt'], 'w');
 
 model_dir = strcat(caffe_model_path,'/det1.caffemodel');
 threshold = [0.6 0.7 0.1];
@@ -65,10 +65,10 @@ RNet=caffe.Net(prototxt_dir,model_dir,'test');
 %		prototxt_dir = strcat(caffe_model_path3,'/det3568.prototxt');
 %end
 
-prototxt_dir = '/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/convert_to_caffe/mtcnn_onet_5points.prototxt'
-model_dir = modelpath;
+%prototxt_dir = '/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/eval_mtcnn/convert_to_caffe/mtcnn_onet_5points.prototxt'
+model_dir = model_dir;
 %model_dir = strcat(caffe_model_path,'/det3.caffemodel');
-ONet=caffe.Net(prototxt_dir,model_dir,'test');
+ONet=caffe.Net(onet_config_path, model_dir, 'test');
 faces=cell(0);
 
 num = length(imglist)

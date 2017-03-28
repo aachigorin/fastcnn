@@ -1,5 +1,9 @@
 import tensorflow as tf
 
+def const(val, dtype=None):
+  return tf.constant(val, shape=[1], dtype=dtype)
+
+
 def zero_const():
   return tf.constant(0, shape=[1])
 

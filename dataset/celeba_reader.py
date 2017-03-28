@@ -37,34 +37,25 @@ class CelebaReader(BaseReader):
 
     if self.part == CelebaReader.DatasetPart.train:
       name_pattern = 'celebagt3data_x[0-9]*.mat'
-      files = sorted(glob.glob(os.path.join(data_dir, name_pattern)))
-      files = [files[0]] + files[2:9]
+      self.filenames = sorted(glob.glob(os.path.join(data_dir, name_pattern)))
+      self.filenames = [self.filenames[0]] + self.filenames[2:9]
     elif self.part == CelebaReader.DatasetPart.test:
       name_pattern = 'celebagt3data_x[0-9]*.mat'
-      files = sorted(glob.glob(os.path.join(data_dir, name_pattern)))
-      files = [files[9], files[1]]
-      print(files)
+      self.filenames = sorted(glob.glob(os.path.join(data_dir, name_pattern)))
+      self.filenames = [self.filenames[9], self.filenames[1]]
+      print(self.filenames)
     else:
       raise Exception("Unsupported dataset part {}".format(part))
 
     # TODO: can move the loading part into init method and derive just shapes and lenght here
     self.labels = []
-    self.imgs = []
-    for file_idx, fpath in enumerate(files):
+    self.imgs_shape = []
+    for file_idx, fpath in enumerate(self.filenames):
       if file_idx >= FLAGS.celeba_max_num_parts:
         break
       print('Loading dataset part #{}. File {}'.format(file_idx, fpath))
 
-      mat = scipy.io.loadmat(fpath)
-      points = mat['pointss']
-      imgs = mat['imgs']
-      is_face = mat['face'] == 1
-      is_face = is_face.reshape(mat['face'].shape[0])
-      faces_to_take = np.logical_and(is_face,
-                                     np.logical_and(np.amax(points, 1) <= 1, np.amin(points, 1) >= 0))
-
-      points = points[faces_to_take, :]
-      imgs = np.transpose(imgs[:, :, :, faces_to_take], (3, 0, 1, 2))
+      imgs, points = CelebaReader._load_mat_file(fpath)
 
       # adding 6 zeros for
       # 1 - cost type (0 - not face, 1 - face, 2 - partface, 3 - landmarks)
@@ -76,7 +67,7 @@ class CelebaReader(BaseReader):
       print('labels', labels.shape)
       print('imgs', imgs.shape)
       self.labels.append(labels)
-      self.imgs.append(imgs)
+      self.imgs_shape.append(imgs.shape)
     print('Finished loading dataset')
 
 
@@ -94,8 +85,8 @@ class CelebaReader(BaseReader):
     self.labels_placeholder = []
     self.tf_imgs = []
     self.tf_labels = []
-    for i in xrange(len(self.imgs)):
-      self.imgs_placeholder.append(tf.placeholder(dtype=tf.float32, shape=self.imgs[i].shape))
+    for i in xrange(len(self.imgs_shape)):
+      self.imgs_placeholder.append(tf.placeholder(dtype=tf.float32, shape=self.imgs_shape[i]))
       self.labels_placeholder.append(tf.placeholder(dtype=tf.float32, shape=self.labels[i].shape))
       self.tf_imgs.append(tf.Variable(self.imgs_placeholder[i], trainable=False, collections=[]))
       self.tf_labels.append(tf.Variable(self.labels_placeholder[i], trainable=False, collections=[]))
@@ -106,7 +97,7 @@ class CelebaReader(BaseReader):
                                       capacity=self.batch_size * 5)
 
       if self.processor is not None:
-        tf_imgs = self.processor(tf_imgs)
+        tf_imgs, tf_labels = self.processor(tf_imgs, tf_labels)
 
       self.parts.append((tf_imgs, tf_labels))
 
@@ -124,11 +115,28 @@ class CelebaReader(BaseReader):
   def init(self, sess):
     print('Initializing the data')
     for i in xrange(len(self.imgs_placeholder)):
+      print('Initializing from dataset part #{}. File {}'.format(i, self.filenames[i]))
+      imgs, _ = CelebaReader._load_mat_file(self.filenames[i])
       sess.run(self.tf_imgs[i].initializer,
-               feed_dict={self.imgs_placeholder[i]: self.imgs[i]})
+               feed_dict={self.imgs_placeholder[i]: imgs})
       sess.run(self.tf_labels[i].initializer,
                feed_dict={self.labels_placeholder[i]: self.labels[i]})
     print('Finished initializing the data')
+
+
+  @staticmethod
+  def _load_mat_file(fpath):
+    mat = scipy.io.loadmat(fpath)
+    points = mat['pointss']
+    imgs = mat['imgs']
+    is_face = mat['face'] == 1
+    is_face = is_face.reshape(mat['face'].shape[0])
+    faces_to_take = np.logical_and(is_face,
+                                   np.logical_and(np.amax(points, 1) <= 1, np.amin(points, 1) >= 0))
+
+    points = points[faces_to_take, :]
+    imgs = np.transpose(imgs[:, :, :, faces_to_take], (3, 0, 1, 2))
+    return imgs, points
 
 
 if __name__ == '__main__':
