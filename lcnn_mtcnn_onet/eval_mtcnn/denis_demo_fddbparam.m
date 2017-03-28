@@ -1,4 +1,4 @@
-function denis_demo_fddbparam(onet_config_path, model_dir, model_name, numpoints, pointoutputs, extensionfactor)
+function denis_demo_fddbparam(onet_config_path, onet_model_path, model_name, numpoints, pointoutputs, extensionfactor)
 %clear all;
 visible = 0;
 write = 0;
@@ -66,11 +66,10 @@ RNet=caffe.Net(prototxt_dir,model_dir,'test');
 %end
 
 %prototxt_dir = '/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/eval_mtcnn/convert_to_caffe/mtcnn_onet_5points.prototxt'
-model_dir = model_dir;
-%model_dir = strcat(caffe_model_path,'/det3.caffemodel');
-ONet=caffe.Net(onet_config_path, model_dir, 'test');
+ONet=caffe.Net(onet_config_path, onet_model_path, 'test');
 faces=cell(0);
 
+disp('All nets are loaded. Starting to detect faces')
 num = length(imglist)
 disp(num)
 t = zeros(num, 10);
