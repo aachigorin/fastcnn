@@ -1,4 +1,4 @@
-function mat_to_caffe(target_path, name)
+function mat_to_caffe(config_path, target_dir, target_model_name)
     curDir = pwd;
 
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -6,13 +6,13 @@ function mat_to_caffe(target_path, name)
 	pdollar_toolbox_path='/media/p.omenitsch/tools/toolbox';
 	addpath(genpath(caffe_path));
 	addpath(genpath(pdollar_toolbox_path));
-	caffe_model_path = '/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/convert_to_caffe/';
+	%config_path = '/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/convert_to_caffe/';
 	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-    prototxt_path = strcat(caffe_model_path, 'mtcnn_onet_5points.prototxt');
+    prototxt_path = strcat(config_path, 'mtcnn_onet_5points.prototxt');
     ONet = caffe.Net(prototxt_path, 'test');
 
-    model_dir = [target_path];
+    model_dir = [target_dir];
 
     disp('loading weights')
     conv0_w = load([model_dir 'conv0_weights.mat']); conv0_w = conv0_w.x;
@@ -55,7 +55,7 @@ function mat_to_caffe(target_path, name)
     ONet.layers('conv_landmarks').params(2).set_data(conv_landmarks_b')
 
     disp('saving the model')
-	ONet.save([target_path name '.caffemodel']);
+	ONet.save([target_dir target_model_name '.caffemodel']);
 
 	disp('forward pass')
 	input_size = 48;
