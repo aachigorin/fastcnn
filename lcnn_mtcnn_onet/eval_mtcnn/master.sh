@@ -25,14 +25,14 @@ NUMPOINTS=5
 EXTENSIONFACTOR=1.11 # (for the new widerface dataset)
 POINTOUTPUTS=1
 
-CONVERT_TO_CAFFE_DIR=/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/eval_mtcnn/convert_to_caffe/
-CAFFE_WEIGHTS_DIR=/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/eval_mtcnn/weights/
+CONVERT_TO_CAFFE_DIR=/media/a.chigorin/code/mtcnn/lcnn_mtcnn_onet/eval_mtcnn/convert_to_caffe/
+CAFFE_WEIGHTS_DIR=/media/a.chigorin/code/mtcnn/lcnn_mtcnn_onet/eval_mtcnn/weights/
 
 #TF_SAVE_MODEL_CMD="CUDA_VISIBLE_DEVICES=$GPU python ${CONVERT_TO_CAFFE_DIR}/save_tf_weights.py --train_dir /media/a.chigorin/projects/fastcnn/mtcnn_onet/exp8 --save_weights_to ${CAFFE_WEIGHTS_DIR}"
 TF_SAVE_MODEL_CMD="CUDA_VISIBLE_DEVICES=$GPU python ${CONVERT_TO_CAFFE_DIR}/save_tf_weights.py --train_dir /media/a.chigorin/projects/fastcnn/mtcnn_onet/exp13 --save_weights_to ${CAFFE_WEIGHTS_DIR} --no_global_avg_pool True"
 
 PTSTESTFOLDER=mtcnn_no_global_pool_5points_aachigorin
-PLOTDIRECTORY=/media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/eval_mtcnn/plots/
+PLOTDIRECTORY=/media/a.chigorin/code/mtcnn/lcnn_mtcnn_onet/eval_mtcnn/plots/
 
 MODEL_LABEL=OnetTest
 MODEL_CONFIG_PATH=${CONVERT_TO_CAFFE_DIR}/mtcnn_onet_5points.prototxt
@@ -41,6 +41,7 @@ MODEL_WEIGHTS_PATH=${CAFFE_WEIGHTS_DIR}/${MODEL_LABEL}
 
 # creating folders 
 mkdir -p ${PTSTESTDB}/${PTSTESTFOLDER}
+mkdir -p ${CAFFE_WEIGHTS_DIR}
 
 if [ $start_from -le 0 ]
 then
@@ -55,7 +56,7 @@ fi
 if [ $start_from -le 1 ]
 then
     CMD="LD_PRELOAD=/usr/lib64/libstdc++.so.6 LD_LIBRARY_PATH=/usr/local/cuda-7.5/lib64:/media/p.omenitsch/tools/caffelib/:"\
-"/media/p.omenitsch/tools/OpenBLAS/lib /media/p.omenitsch/matgpu -r \"mat_to_caffe('${MODEL_CONFIG_PATH}', ''${CAFFE_WEIGHTS_DIR}','${MODEL_LABEL}'); exit; \""
+"/media/p.omenitsch/tools/OpenBLAS/lib /media/p.omenitsch/matgpu -r \"mat_to_caffe('${MODEL_CONFIG_PATH}', '${CAFFE_WEIGHTS_DIR}','${MODEL_LABEL}'); exit; \""
     cd ${CONVERT_TO_CAFFE_DIR}
     echo $CMD
     eval $CMD
@@ -111,7 +112,7 @@ then
     echo $CMD
     eval $CMD
     cp imgs/results${DBMODEL_LABEL}boxfp1.png ${PLOTDIRECTORY}
-    cd /media/a.chigorin/code/fastcnn/lcnn_mtcnn_onet/eval_mtcnn/
+    cd /media/a.chigorin/code/mtcnn/lcnn_mtcnn_onet/eval_mtcnn/
 fi
 
 if [ $start_from -le 5 ]
